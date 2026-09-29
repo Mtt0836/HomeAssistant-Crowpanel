@@ -1,0 +1,12 @@
+# I fine riga li normalizza git, tranne dove contano davvero.
+* text=auto
+
+# La patch per il firmware del C6 deve restare con i fine riga di Unix: i
+# sorgenti di Espressif li hanno cosi', e se git la convertisse a CRLF
+# scaricando il repository su Windows non si applicherebbe piu'.
+*.patch -text
+
+# Firmware e immagini: mai toccati.
+*.bin binary
+*.png binary
+*.gz  binary

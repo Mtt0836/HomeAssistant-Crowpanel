@@ -1,0 +1,33 @@
+# Controlli automatici sull'integrazione per Home Assistant.
+#
+# hassfest e' il controllore di Home Assistant: guarda manifest.json, i
+# servizi, le traduzioni. La action di HACS controlla quello che HACS pretende
+# per poter installare (e per entrare nell'elenco predefinito).
+#
+# Girano a ogni push e una volta a settimana: le regole di HA e di HACS
+# cambiano nel tempo, e conviene accorgersene prima che se ne accorga qualcuno
+# che sta provando a installare.
+name: Controlli
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "0 5 * * 1"
+
+jobs:
+  hassfest:
+    name: hassfest di Home Assistant
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: home-assistant/actions/hassfest@master
+
+  hacs:
+    name: HACS
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hacs/action@main
+        with:
+          category: integration

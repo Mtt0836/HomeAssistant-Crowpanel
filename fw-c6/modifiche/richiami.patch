@@ -1,0 +1,81 @@
+diff --git a/main/CMakeLists.txt b/main/CMakeLists.txt
+index 830cc8e..1afcd6a 100644
+--- a/main/CMakeLists.txt
++++ b/main/CMakeLists.txt
+@@ -18,6 +18,7 @@ set(COMPONENT_SRCS
+ 	"slave_ext_coex.c"
+ 	"slave_control.c"
+ 	"slave_util.c"
++	"rollback_guard.c"
+ )
+ 
+ if(CONFIG_ESP_HOSTED_USE_MEMPOOL)
+diff --git a/main/esp_hosted_coprocessor.c b/main/esp_hosted_coprocessor.c
+index 154a236..ded599c 100644
+--- a/main/esp_hosted_coprocessor.c
++++ b/main/esp_hosted_coprocessor.c
+@@ -4,6 +4,7 @@
+  * SPDX-License-Identifier: Apache-2.0
+  */
+ 
++#include "rollback_guard.h"
+ #include <stdlib.h>
+ #include <stdio.h>
+ #include <string.h>
+@@ -717,6 +718,8 @@ static void process_rx_pkt(interface_buffer_handle_t *buf_handle)
+ 
+ 	(void)ret;
+ 
++	rollback_guard_host_pkt();
++
+ 	header = (struct esp_payload_header *) buf_handle->payload;
+ 	payload = buf_handle->payload + le16toh(header->offset);
+ 	payload_len = le16toh(header->len);
+@@ -899,6 +902,7 @@ int event_handler(uint8_t val)
+ 			if (if_handle) {
+ 				if_handle->state = ACTIVE;
+ 				datapath = 1;
++				rollback_guard_datapath(true);
+ 				ESP_EARLY_LOGI(TAG, "Start Data Path");
+ 				if (host_reset_sem) {
+ 					xSemaphoreGive(host_reset_sem);
+@@ -912,6 +916,7 @@ int event_handler(uint8_t val)
+ 
+ 		case ESP_CLOSE_DATA_PATH:
+ 			datapath = 0;
++			rollback_guard_datapath(false);
+ 			if (if_handle) {
+ 				ESP_EARLY_LOGI(TAG, "Stop Data Path");
+ 				if (if_handle->state > DEACTIVE) {
+@@ -1300,6 +1305,10 @@ void app_main(void)
+ 	}
+ 	ESP_ERROR_CHECK( ret );
+ 
++	/* Prima di tutto: se questa immagine e' in prova e ha gia' fallito
++	   troppe volte, si torna all'altro slot. */
++	rollback_guard_init();
++
+ 	esp_hosted_coprocessor_init();
+ 
+ #ifdef CONFIG_ESP_HOSTED_NETWORK_SPLIT_ENABLED
+diff --git a/main/slave_control.c b/main/slave_control.c
+index 7c51888..27a95cf 100644
+--- a/main/slave_control.c
++++ b/main/slave_control.c
+@@ -4,6 +4,7 @@
+  * SPDX-License-Identifier: Apache-2.0
+  */
+ 
++#include "rollback_guard.h"
+ #include <string.h>
+ 
+ #include "freertos/FreeRTOS.h"
+@@ -455,7 +456,7 @@ static esp_err_t req_get_coprocessor_fw_version(Rpc *req, Rpc *resp, void *priv_
+ 	resp_payload->patch1     = PROJECT_VERSION_PATCH_1;
+ 	resp_payload->revision   = -1;
+ 	resp_payload->prerelease = -1;
+-	resp_payload->build      = -1;
++	resp_payload->build      = RB_FW_BUILD;   /* distingue questa immagine (comando fw del P4) */
+ 	resp_payload->chip_id    = CONFIG_IDF_FIRMWARE_CHIP_ID;
+ 	RPC_RESP_COPY_STR(resp_payload->idf_target, CONFIG_IDF_TARGET, strlen(CONFIG_IDF_TARGET));
+ 	resp_payload->resp = ESP_OK;

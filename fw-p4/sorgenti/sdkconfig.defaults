@@ -1,0 +1,139 @@
+# This file was generated using idf.py save-defconfig. It can be edited manually.
+# Espressif IoT Development Framework (ESP-IDF) 5.5.0 Project Minimal Configuration
+#
+CONFIG_IDF_TARGET="esp32p4"
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_EXAMPLE_ENABLE_CAM_SENSOR_PIC_VFLIP=n
+CONFIG_EXAMPLE_ENABLE_CAM_SENSOR_PIC_HFLIP=n
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+CONFIG_COMPILER_ORPHAN_SECTIONS_PLACE=y
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_SPEED_200M=y
+CONFIG_SPIRAM_XIP_FROM_PSRAM=y
+CONFIG_SPIRAM_USE_CAPS_ALLOC=y
+CONFIG_CACHE_L2_CACHE_256KB=y
+# Linea L2 a 64 byte: con 128 e i buffer ESP-Hosted in PSRAM (1600 B) meta' dei
+# blocchi TX non e' allineata e l'SDIO li rifiuta: "Failed to send data: 258",
+# cioe' ESP_ERR_INVALID_ARG. Vedi espressif/esp-hosted-mcu issue #219.
+CONFIG_CACHE_L2_CACHE_LINE_64B=y
+# Dopo un crash il pannello si riavvia invece di restare fermo. E' appeso a
+# un muro: uno schermo nero finche' qualcuno non stacca la corrente e' peggio
+# di venti secondi di riavvio. Il crash non passa comunque inosservato: il
+# motivo dell'ultimo riavvio finisce in Home Assistant, fra i sensori.
+CONFIG_ESP_SYSTEM_PANIC_PRINT_REBOOT=y
+# La partizione dati non viene piu' scritta a ogni flash (vedi
+# main/CMakeLists.txt), quindi su un pannello nuovo e' vergine: si formatta
+# da sola al primo montaggio. Senza questa, /spiffs non esisterebbe proprio.
+CONFIG_BSP_SPIFFS_FORMAT_ON_MOUNT_FAIL=y
+CONFIG_FATFS_LFN_HEAP=y
+CONFIG_FREERTOS_HZ=1000
+CONFIG_FREERTOS_VTASKLIST_INCLUDE_COREID=y
+CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
+CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM=n
+CONFIG_VFS_MAX_COUNT=15
+CONFIG_ESP_BROOKESIA_LOG_STYLE_STD=y
+CONFIG_ESP_BROOKESIA_MEMORY_USE_CUSTOM=y
+CONFIG_BSP_LCD_DPI_BUFFER_NUMS=2
+CONFIG_BSP_DISPLAY_LVGL_AVOID_TEAR=y
+CONFIG_BSP_DISPLAY_LVGL_DIRECT_MODE=y
+CONFIG_LV_COLOR_SCREEN_TRANSP=y
+CONFIG_LV_MEM_CUSTOM=y
+CONFIG_LV_MEM_CUSTOM_INCLUDE="esp_heap_caps.h"
+CONFIG_LV_MEMCPY_MEMSET_STD=y
+CONFIG_LV_CIRCLE_CACHE_SIZE=10
+CONFIG_LV_LAYER_SIMPLE_BUF_SIZE=102400
+CONFIG_LV_IMG_CACHE_DEF_SIZE=20
+CONFIG_LV_GRAD_CACHE_DEF_SIZE=10240
+CONFIG_LV_ATTRIBUTE_FAST_MEM_USE_IRAM=y
+CONFIG_LV_FONT_MONTSERRAT_8=y
+CONFIG_LV_FONT_MONTSERRAT_10=y
+CONFIG_LV_FONT_MONTSERRAT_12=y
+CONFIG_LV_FONT_MONTSERRAT_16=y
+CONFIG_LV_FONT_MONTSERRAT_18=y
+CONFIG_LV_FONT_MONTSERRAT_20=y
+CONFIG_LV_FONT_MONTSERRAT_22=y
+CONFIG_LV_FONT_MONTSERRAT_24=y
+CONFIG_LV_FONT_MONTSERRAT_26=y
+CONFIG_LV_FONT_MONTSERRAT_28=y
+CONFIG_LV_FONT_MONTSERRAT_30=y
+CONFIG_LV_FONT_MONTSERRAT_32=y
+CONFIG_LV_FONT_MONTSERRAT_34=y
+CONFIG_LV_FONT_MONTSERRAT_36=y
+CONFIG_LV_FONT_MONTSERRAT_38=y
+CONFIG_LV_FONT_MONTSERRAT_40=y
+CONFIG_LV_FONT_MONTSERRAT_42=y
+CONFIG_LV_FONT_MONTSERRAT_44=y
+CONFIG_LV_FONT_MONTSERRAT_46=y
+CONFIG_LV_FONT_MONTSERRAT_48=y
+CONFIG_LV_USE_MONKEY=y
+CONFIG_LV_USE_DEMO_WIDGETS=y
+CONFIG_LV_USE_DEMO_BENCHMARK=y
+CONFIG_LV_USE_DEMO_STRESS=y
+CONFIG_IDF_EXPERIMENTAL_FEATURES=y
+
+CONFIG_SLAVE_IDF_TARGET_ESP32C6=y
+
+CONFIG_ESP_HOSTED_ENABLED=y
+CONFIG_ESP_HOSTED_P4_DEV_BOARD_NONE
+CONFIG_ESP_HOSTED_PRIV_SDIO_OPTION=y
+CONFIG_ESP_HOSTED_IDF_SLAVE_TARGET="esp32c6"
+CONFIG_ESP_HOSTED_SDIO_RESET_ACTIVE_HIGH=y
+CONFIG_ESP_HOSTED_SDIO_SLOT_1=y
+
+# CONFIG_ESP_HOSTED_SDIO_1_BIT_BUS is not set
+CONFIG_ESP_HOSTED_SDIO_CLOCK_FREQ_KHZ=20000
+CONFIG_ESP_HOSTED_PRIV_SDIO_PIN_CMD_SLOT_1=19
+CONFIG_ESP_HOSTED_PRIV_SDIO_PIN_CLK_SLOT_1=18
+CONFIG_ESP_HOSTED_PRIV_SDIO_PIN_D0_SLOT_1=17
+CONFIG_ESP_HOSTED_PRIV_SDIO_PIN_D1_1BIT_BUS_SLOT_1=15
+CONFIG_ESP_HOSTED_SDIO_GPIO_RESET_SLAVE=32
+CONFIG_ESP_HOSTED_ENABLE_BT_BLUEDROID=y
+
+# --- pin SDIO CrowPanel V1.1/V1.2, bus a 4 linee ---
+CONFIG_ESP_HOSTED_SDIO_4_BIT_BUS=y
+CONFIG_ESP_HOSTED_PRIV_SDIO_PIN_D1_4BIT_BUS_SLOT_1=16
+CONFIG_ESP_HOSTED_PRIV_SDIO_PIN_D2_4BIT_BUS_SLOT_1=15
+CONFIG_ESP_HOSTED_PRIV_SDIO_PIN_D3_4BIT_BUS_SLOT_1=14
+
+# pool buffer SDIO in PSRAM: la RAM interna non basta su questa build
+CONFIG_ESP_HOSTED_MEMPOOL_PREFER_SPIRAM=y
+
+# iTWT (Target Wake Time del Wi-Fi 6): sospettato per i timeout SDIO a 300s
+# CONFIG_ESP_HOSTED_ENABLE_ITWT is not set
+
+# il recupero del trasporto lo gestisce hosted_recovery.cpp, senza riavvio
+# CONFIG_ESP_HOSTED_TRANSPORT_RESTART_ON_FAILURE is not set
+
+# Finestra TCP di ricezione a 2 segmenti: HA non puo' inviare raffiche lunghe
+# mentre il P4 deve scrivere gli ACK verso il C6 (timeout SDIO sotto raffica).
+CONFIG_LWIP_TCP_WND_DEFAULT=2880
+
+# Server HTTPS del pannello: la pagina di configurazione chiede una password,
+# che non deve viaggiare in chiaro sulla rete di casa. Il certificato se lo
+# genera il pannello al primo avvio (web_cert.cpp).
+CONFIG_ESP_HTTPS_SERVER_ENABLE=y
+
+# Buffer di mbedTLS in PSRAM: una connessione TLS vuole decine di KB e la RAM
+# interna e' la risorsa piu' scarsa (ne restano ~130 KB).
+CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
+# CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC is not set
+
+# Codice QR: lo mostra la configurazione guidata per far aprire la pagina del
+# pannello dal telefono (e la schermata di primo avvio della dashboard).
+CONFIG_LV_USE_QRCODE=y
+
+# Intestazioni delle richieste: un browser vero ne manda piu' di un chilobyte
+# (user-agent, lingue, cookie, sec-*). Con il valore predefinito il pannello
+# rispondeva "Header fields are too long" e la pagina non riusciva nemmeno a
+# fare l'accesso. L'indirizzo lungo serve al ritorno dall'autorizzazione di HA.
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=4096
+CONFIG_HTTPD_MAX_URI_LEN=1024
+
+# Prese di rete: il server HTTPS ne usa una per connessione piu' due di
+# servizio, il rimando sulla porta 80 altrettante, e restano il WebSocket verso
+# HA e le chiamate HTTP dell'abbinamento. Con le 10 predefinite si esauriscono
+# appena un browser tiene aperte alcune connessioni: il pannello smetteva di
+# rispondere e l'abbinamento falliva senza nemmeno partire.
+CONFIG_LWIP_MAX_SOCKETS=16

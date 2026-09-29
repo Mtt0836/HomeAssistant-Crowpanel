@@ -1,0 +1,89 @@
+Pannello Home Assistant per CrowPanel Advance 10.1"
+Copyright 2026 Mtt0836
+
+Questo prodotto include software sviluppato da terzi, elencato qui sotto.
+Tutto il progetto è distribuito con licenza Apache 2.0 (vedi LICENSE).
+
+--------------------------------------------------------------------------
+Firmware del pannello (fw-p4/sorgenti)
+--------------------------------------------------------------------------
+
+Parte dalla demo "esp_brookesia_phone" della scheda CrowPanel Advance 10.1"
+di Elecrow, a sua volta derivata dall'esempio di Espressif per la
+ESP32-P4-Function-EV-Board.
+
+  Copyright Espressif Systems (Shanghai) CO LTD
+  Copyright Elecrow
+  Licenza Apache 2.0
+
+I file originali conservano il loro intestazione di copyright e la riga
+SPDX-License-Identifier. Le parti aggiunte per questo progetto sono, in
+sostanza:
+
+  components/apps/home_dashboard/     tutto (dashboard di Home Assistant,
+                                      slideshow, pagina web, integrazione,
+                                      console di servizio)
+  components/apps/setting/settings_extra.cpp   sezioni Rete, Debug, Sicurezza
+  components/apps/setting/setup_wizard.*       configurazione guidata
+  main/lvgl_mem.c                     allocatore LVGL in PSRAM
+  sdkconfig.defaults                  configurazione della scheda
+  web/panel.html                      pagina di configurazione
+
+I README che si trovano in fw-p4/sorgenti con il nome
+"README-upstream-esp-brookesia*" sono quelli originali dell'esempio
+Espressif: parlano della ESP32-P4-Function-EV-Board e sono lasciati lì per
+attribuzione, non descrivono questo progetto.
+
+Componenti di Espressif inclusi nel progetto:
+
+  components/espressif__esp32_p4_function_ev_board/   BSP della scheda
+  components/bsp_extra/                               estensioni del BSP
+  (con la loro copia della licenza Apache 2.0)
+
+Altri componenti (ESP-IDF, esp-brookesia, esp-hosted-mcu, LVGL, …) non
+sono inclusi: li scarica il gestore dei componenti al momento di compilare.
+
+--------------------------------------------------------------------------
+Firmware della radio (fw-c6)
+--------------------------------------------------------------------------
+
+Il binario e le modifiche partono dall'esempio "slave" di ESP-Hosted MCU.
+
+  Copyright Espressif Systems (Shanghai) CO LTD
+  Licenza Apache 2.0
+
+Le parti aggiunte per questo progetto sono in fw-c6/modifiche
+(rollback_guard.c/h e le poche righe che lo richiamano).
+
+--------------------------------------------------------------------------
+Icone
+--------------------------------------------------------------------------
+
+Il font delle icone compilato nel firmware
+(fw-p4/sorgenti/components/apps/home_dashboard/assets/lv_font_mdi_*.c) è un
+sottoinsieme di Material Design Icons.
+
+  Material Design Icons — Pictogrammers
+  https://pictogrammers.com/library/mdi/
+  Licenza Apache 2.0
+
+Il sottoinsieme si rigenera con strumenti/costruisci_icone.ps1, che scarica
+il font originale al momento: il font completo non è ridistribuito qui.
+
+--------------------------------------------------------------------------
+Integrazione per Home Assistant (custom_components/crowpanel)
+--------------------------------------------------------------------------
+
+Scritta per questo progetto. Usa le API di Home Assistant.
+
+  Home Assistant — https://www.home-assistant.io/
+  Non è un'integrazione ufficiale e non è approvata dal progetto Home
+  Assistant.
+
+--------------------------------------------------------------------------
+Marchi
+--------------------------------------------------------------------------
+
+Elecrow, CrowPanel, Espressif, ESP32 e Home Assistant sono marchi dei
+rispettivi proprietari. Questo progetto non è prodotto, approvato o
+sostenuto da nessuno di loro.

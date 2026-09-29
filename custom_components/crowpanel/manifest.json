@@ -1,0 +1,17 @@
+{
+  "domain": "crowpanel",
+  "name": "Pannello CrowPanel",
+  "codeowners": [
+    "@Mtt0836"
+  ],
+  "config_flow": true,
+  "dependencies": [
+    "websocket_api"
+  ],
+  "documentation": "https://github.com/Mtt0836/HomeAssistant-Crowpanel/blob/main/docs/integrazione-home-assistant.md",
+  "integration_type": "hub",
+  "iot_class": "local_push",
+  "issue_tracker": "https://github.com/Mtt0836/HomeAssistant-Crowpanel/issues",
+  "requirements": [],
+  "version": "0.1.0"
+}

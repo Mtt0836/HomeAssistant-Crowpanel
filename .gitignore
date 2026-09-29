@@ -1,0 +1,19 @@
+# Roba che compare compilando, e che non va nel repository.
+fw-p4/sorgenti/build/
+fw-p4/sorgenti/managed_components/
+fw-p4/sorgenti/dependencies.lock
+# sdkconfig e' generato: la configurazione che conta sta in sdkconfig.defaults
+fw-p4/sorgenti/sdkconfig
+fw-p4/sorgenti/sdkconfig.old
+
+# copie di lavoro
+*.bak
+*.bak_*
+
+# il font completo delle icone, scaricato solo per rigenerare il sottoinsieme
+strumenti/icone/node_modules/
+strumenti/icone/package-lock.json
+
+__pycache__/
+.DS_Store
+Thumbs.db

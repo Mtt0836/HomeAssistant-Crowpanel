@@ -1,0 +1,69 @@
+mostra_dashboard:
+  name: Mostra una dashboard
+  description: >-
+    Fa passare il pannello a una dashboard di Home Assistant. Il pannello si
+    ricollega, quindi ci mette qualche secondo.
+  fields:
+    pannello:
+      name: Pannello
+      description: Identificativo del pannello (lo trovi nella pagina del dispositivo).
+      required: true
+      example: a0f262854468
+      selector:
+        text:
+    percorso:
+      name: Percorso
+      description: Il nome della dashboard nell'indirizzo, "lovelace" per quella principale.
+      required: true
+      example: lovelace
+      selector:
+        text:
+    vista:
+      name: Vista
+      description: Quale vista della dashboard, contando da zero.
+      default: 0
+      selector:
+        number:
+          min: 0
+          max: 30
+
+avviso:
+  name: Avviso sul pannello
+  description: >-
+    Fa leggere un messaggio ad alta voce al pannello (voce di Home Assistant).
+    Per ora il messaggio non compare anche scritto sullo schermo.
+  fields:
+    pannello:
+      name: Pannello
+      required: true
+      example: a0f262854468
+      selector:
+        text:
+    messaggio:
+      name: Messaggio
+      required: true
+      example: La lavatrice ha finito
+      selector:
+        text:
+    voce:
+      name: Leggilo ad alta voce
+      description: >-
+        Senza questa, per ora, non succede niente: il messaggio scritto non
+        c'e' ancora.
+      default: true
+      selector:
+        boolean:
+
+invia_slideshow:
+  name: Rimanda la configurazione dello slideshow
+  description: >-
+    Rispedisce al pannello i valori e i tempi dello slideshow impostati qui.
+    Normalmente non serve: il pannello li riceve da solo appena si collega e
+    ogni volta che cambi le impostazioni.
+  fields:
+    pannello:
+      name: Pannello
+      required: true
+      example: a0f262854468
+      selector:
+        text:

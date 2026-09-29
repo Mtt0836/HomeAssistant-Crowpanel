@@ -1,0 +1,90 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Pannelli CrowPanel",
+        "description": "Non c'e' niente da scrivere: i pannelli si presentano da soli quando si collegano a Home Assistant, e compaiono qui come dispositivi. Se non ne vedi nessuno, controlla che il pannello sia acceso e collegato a questo Home Assistant."
+      }
+    },
+    "abort": {
+      "already_configured": "L'integrazione e' gia' aggiunta: i pannelli nuovi compaiono da soli."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Quale pannello",
+        "data": {
+          "pannello": "Pannello"
+        }
+      },
+      "pannello": {
+        "title": "Slideshow di {pannello}",
+        "description": "Mentre scorrono le foto il pannello mostra ora, data e fino a {quanti} valori. Il nome e' quello che compare sopra al valore: lasciandolo vuoto vale quello di Home Assistant, che spesso e' lungo e tecnico.",
+        "data": {
+          "gestito_da_ha": "Gestisci lo slideshow da qui",
+          "valore_0": "Primo valore",
+          "nome_0": "Nome del primo valore",
+          "valore_1": "Secondo valore",
+          "nome_1": "Nome del secondo valore",
+          "valore_2": "Terzo valore",
+          "nome_2": "Nome del terzo valore",
+          "valore_3": "Quarto valore",
+          "nome_3": "Nome del quarto valore",
+          "slideshow_dopo_min": "Slideshow dopo (minuti di inattivita')",
+          "spegni_dopo_min": "Schermo spento dopo altri (minuti)",
+          "secondi_foto": "Secondi per foto",
+          "casuale": "Ordine casuale",
+          "cartella": "Cartella delle foto sul pannello"
+        },
+        "data_description": {
+          "gestito_da_ha": "Togliendo la spunta il pannello torna a gestirsi lo slideshow da solo, dalla sua pagina web."
+        }
+      }
+    },
+    "abort": {
+      "nessun_pannello": "Nessun pannello si e' ancora presentato. Accendilo e aspetta un minuto."
+    }
+  },
+  "entity": {
+    "switch": {
+      "schermo": {
+        "name": "Schermo"
+      }
+    },
+    "number": {
+      "luminosita": {
+        "name": "Luminosita"
+      }
+    },
+    "sensor": {
+      "acceso_da": {
+        "name": "Acceso da"
+      },
+      "ram_interna": {
+        "name": "RAM interna libera"
+      },
+      "ram_psram": {
+        "name": "PSRAM libera"
+      },
+      "recuperi": {
+        "name": "Recuperi del collegamento radio"
+      },
+      "dashboard": {
+        "name": "Dashboard mostrata"
+      },
+      "riavvio": {
+        "name": "Motivo dell'ultimo riavvio"
+      },
+      "alimentazione_mv": {
+        "name": "Tensione di alimentazione"
+      },
+      "alimentazione_pct": {
+        "name": "Carica"
+      },
+      "alimentazione_stato": {
+        "name": "Stato alimentazione (grezzo)"
+      }
+    }
+  }
+}

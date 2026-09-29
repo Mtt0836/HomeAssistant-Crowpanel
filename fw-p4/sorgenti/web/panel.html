@@ -1,0 +1,975 @@
+<!doctype html>
+<html lang="it">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pannello Home Assistant</title>
+<!--
+  Pagina di configurazione del pannello.
+  Una pagina sola, senza librerie esterne: il pannello puo' non avere internet.
+  Sorgente: V0.2/web/panel.html - dopo averla modificata lancia
+  strumenti/costruisci_web.bat, che la comprime per la SD e per il firmware.
+
+  L'editor disegna la stessa griglia a 12 colonne che usa il pannello: si
+  trascina per spostare (anche da una sezione all'altra) e si tira l'angolo per
+  ridimensionare. Tutto finisce nei ritocchi locali: Home Assistant non viene
+  toccato.
+-->
+<style>
+  :root{
+    --bg:#f4f5f7; --card:#fff; --line:#dfe3e8; --txt:#1d2129; --soft:#6b7280;
+    --accent:#0b7dda; --warn:#b3261e; --ok:#1e8e3e;
+    --pbg:#111318; --pcard:#1b2030; --ptxt:#e8eaed; --psoft:#9aa3ad;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font:15px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+       background:var(--bg);color:var(--txt)}
+  header{position:sticky;top:0;z-index:5;background:#1d2129;color:#fff;
+         padding:12px 16px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+  header h1{font-size:17px;margin:0;font-weight:600}
+  header .sub{color:#9aa3ad;font-size:13px}
+  header .sp{flex:1}
+  .badge{font-size:12px;background:#2f353d;color:#cfd6dd;border-radius:999px;padding:3px 10px}
+  button{font:inherit;padding:8px 14px;border-radius:8px;border:1px solid var(--line);
+         background:var(--card);color:var(--txt);cursor:pointer}
+  button:hover{border-color:#b9c0c8}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  button.ghost{background:transparent;color:#fff;border-color:#42484f}
+  input{font:inherit;padding:9px 10px;border:1px solid var(--line);border-radius:8px;
+        width:100%;background:#fff;color:var(--txt)}
+  label{display:block;margin:10px 0 4px;color:var(--soft);font-size:13px}
+  main{max-width:1100px;margin:0 auto;padding:16px}
+  .msg{padding:10px 14px;border-radius:8px;margin-bottom:14px;display:none}
+  .msg.show{display:block}
+  .msg.err{background:#fde8e6;color:var(--warn)}
+  .msg.ok{background:#e6f4ea;color:var(--ok)}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;
+        margin-bottom:16px;overflow:hidden}
+  .card > h2{margin:0;padding:12px 14px;font-size:14px;letter-spacing:.02em;
+             text-transform:uppercase;color:var(--soft);border-bottom:1px solid var(--line)}
+  .card .body{padding:14px}
+  .tabs{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap}
+  .tabs button.on{background:var(--accent);border-color:var(--accent);color:#fff}
+  .bar{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center}
+  .hint{color:var(--soft);font-size:13px;margin:8px 0 0}
+  .gate{max-width:420px;margin:60px auto}
+
+  /* ---- scelta dei valori dello slideshow ---- */
+  .hint.ha{background:#fff7e6;border:1px solid #f0d9a8;border-radius:8px;padding:10px 12px}
+  .hint.ha button{margin-left:8px}
+  .chosen{display:flex;flex-direction:column;gap:8px;margin:10px 0}
+  .chosen .slot{display:flex;align-items:center;gap:10px;background:#eef1f5;
+                border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:13px}
+  .chosen .slot .src{flex:1 1 40%;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .chosen .slot input{flex:1 1 40%;min-width:120px}
+  .chosen .slot.empty{color:var(--soft);font-style:italic;justify-content:center}
+  .chosen .slot button{padding:2px 8px;line-height:1.3;font-size:15px}
+  @media (max-width:560px){ .chosen .slot{flex-wrap:wrap} }
+  .find{width:100%;margin:6px 0}
+  .tree{max-height:360px;overflow:auto;border:1px solid var(--line);border-radius:8px}
+  .tree details{border-bottom:1px solid var(--line)}
+  .tree details:last-child{border-bottom:0}
+  .tree summary{padding:8px 12px;cursor:pointer;font-weight:600;font-size:14px}
+  .tree summary .room{font-weight:400;color:var(--soft);margin-left:6px}
+  .tree .ent{display:flex;justify-content:space-between;align-items:center;gap:10px;
+             padding:6px 12px 6px 28px;font-size:13px}
+  .tree .ent:hover{background:#f2f4f7}
+  .tree .ent .eid{color:var(--soft);font-size:12px}
+  .tree .ent.on{background:#e6f4ea}
+  footer{max-width:1100px;margin:0 auto;padding:0 16px 32px;color:var(--soft);font-size:13px}
+
+  /* ---- tela: le stesse proporzioni dello schermo del pannello ---- */
+  .wrap{position:relative;overflow:hidden;border-radius:12px;background:var(--pbg);
+        border:1px solid #2a2f3a}
+  .canvas{transform-origin:top left;padding:12px;display:flex;gap:16px;align-items:flex-start}
+  .sec{flex:1 1 0;min-width:0;display:flex;flex-direction:column;gap:8px}
+  .sec > .head{display:flex;align-items:center;gap:6px;color:var(--psoft);
+               font-size:20px;padding:0 2px}
+  .sec > .head .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .sec.off{opacity:.35}
+  .grid{display:grid;grid-template-columns:repeat(12,1fr);align-content:start}
+  .it{position:relative;background:var(--pcard);border-radius:10px;padding:8px 10px;
+      color:var(--ptxt);font-size:15px;overflow:hidden;cursor:grab;
+      border:1px solid transparent;display:flex;flex-direction:column;justify-content:center}
+  .it .lb{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .it .sub{color:var(--psoft);font-size:12px;margin-top:2px}
+  .it.off{opacity:.3}
+  .it.drag{opacity:.4;cursor:grabbing}
+  .it.sel{border-color:var(--accent)}
+  .it .eye{position:absolute;top:4px;right:6px;font-size:13px;color:var(--psoft);
+           cursor:pointer;padding:2px 4px;line-height:1}
+  .it .sld{position:absolute;top:4px;right:26px;font-size:13px;color:var(--psoft);
+           cursor:pointer;padding:2px 4px;line-height:1}
+  .it .sld.on{color:var(--accent)}
+  .it .hdl{position:absolute;right:0;bottom:0;width:18px;height:18px;cursor:nwse-resize;
+           background:linear-gradient(135deg,transparent 50%,var(--accent) 50%);
+           border-bottom-right-radius:10px}
+  .shot{width:100%;display:block;border-radius:12px;border:1px solid #2a2f3a;background:#000}
+  @media (max-width:560px){ .tabs button{flex:1} }
+</style>
+
+<header>
+  <h1>Pannello Home Assistant</h1>
+  <span class="sub" id="view"></span>
+  <span class="sp"></span>
+  <span class="badge" id="who" hidden></span>
+  <button class="ghost" id="btn-logout" hidden onclick="logout()">Esci</button>
+</header>
+
+<main>
+  <div class="msg" id="msg"></div>
+
+  <section id="gate-setup" class="gate" hidden>
+    <div class="card"><h2>Primo avvio</h2><div class="body">
+      <p>Scegli la password di amministratore del pannello. Serve per cambiare
+         il collegamento a Home Assistant e per creare l'accesso ospite.</p>
+      <label for="su1">Password (almeno 6 caratteri)</label>
+      <input id="su1" type="password" autocomplete="new-password">
+      <label for="su2">Ripetila</label>
+      <input id="su2" type="password" autocomplete="new-password">
+      <p><button class="primary" onclick="doSetup()">Crea</button></p>
+      <p id="ha-login0" hidden><button onclick="location.href='/auth/start'">Entra con Home Assistant</button></p>
+    </div></div>
+  </section>
+
+  <section id="gate-login" class="gate" hidden>
+    <div class="card"><h2>Accesso</h2><div class="body">
+      <label for="pw">Password</label>
+      <input id="pw" type="password" autocomplete="current-password"
+             onkeydown="if(event.key==='Enter')doLogin()">
+      <p class="hint">Con la password di amministratore si configura tutto;
+         con quella ospite si possono solo sistemare le card.</p>
+      <p><button class="primary" onclick="doLogin()">Entra</button></p>
+      <p id="ha-login" hidden>
+        <button onclick="location.href='/auth/start'">Entra con Home Assistant</button>
+      </p>
+      <p class="hint" id="ha-login-hint" hidden>Usi il tuo account di Home Assistant:
+         chi li' e' amministratore lo e' anche qui, gli altri entrano come ospiti.
+         La password qui sopra resta l'accesso di riserva per quando HA non risponde.</p>
+    </div></div>
+  </section>
+
+  <section id="app" hidden>
+    <div class="tabs">
+      <button id="tab-dash" class="on" onclick="showTab('dash')">Dashboard</button>
+      <button id="tab-slide" hidden onclick="showTab('slide')">Slideshow</button>
+      <button id="tab-ha"   hidden onclick="showTab('ha')">Home Assistant</button>
+      <button id="tab-acc"  hidden onclick="showTab('acc')">Accessi</button>
+    </div>
+
+    <div id="pane-dash">
+      <div class="bar">
+        <button class="primary" onclick="save()">Salva</button>
+        <button onclick="shoot()">Foto del pannello</button>
+        <button onclick="reloadHA()">Ricarica da HA</button>
+        <button onclick="resetAll()">Ripristina</button>
+        <span class="hint" id="dash-state"></span>
+      </div>
+      <div class="wrap" id="wrap"><div class="canvas" id="canvas"></div></div>
+      <p class="hint">Trascina una card per spostarla, anche in un'altra sezione.
+         Tira l'angolo in basso a destra per cambiarne larghezza e altezza: la
+         griglia e' quella a 12 colonne del pannello. Il pallino in alto a destra
+         la nasconde. La stellina accanto al pallino porta quel valore nello
+         slideshow, e premuta di nuovo lo toglie: compare solo sulle card che
+         hanno un sensore solo. Home Assistant non viene modificato.</p>
+      <div class="card" id="shot-box" hidden>
+        <h2>Com'e' adesso sul pannello</h2>
+        <div class="body"><canvas id="shot" class="shot"></canvas></div>
+      </div>
+    </div>
+
+    <div id="pane-slide" hidden>
+      <div class="card"><h2>Valori in sovrimpressione</h2><div class="body">
+        <p class="hint">Mentre scorrono le foto il pannello mostra ora, data e
+           fino a <b id="sl-max">4</b> valori presi da Home Assistant. Qui si
+           scelgono: l'elenco e' quello del tuo Home Assistant, raggruppato per
+           dispositivo. Nella casella a destra puoi dare a ognuno un nome piu'
+           corto da mostrare sullo schermo; lasciandola vuota vale quello di
+           Home Assistant.</p>
+        <p class="hint ha" id="sl-ha" hidden>Questo slideshow lo gestisce Home
+           Assistant: qui si guarda soltanto. Si cambia da HA, in
+           Impostazioni &gt; Dispositivi e servizi &gt; Pannello CrowPanel.
+           <button onclick="riprendiSlide()">Riprendi il comando da qui</button></p>
+        <div id="sl-chosen" class="chosen"></div>
+        <input id="sl-find" class="find" oninput="drawTree(this.value)"
+               placeholder="Cerca un dispositivo o un sensore">
+        <div id="sl-tree" class="tree">Caricamento dell'elenco...</div>
+      </div></div>
+      <div class="card"><h2>Tempi e foto</h2><div class="body">
+        <label for="sl-after">Slideshow dopo (minuti di inattivita')</label>
+        <input id="sl-after" type="number" min="0.2" step="0.1">
+        <label for="sl-off">Schermo spento dopo altri (minuti)</label>
+        <input id="sl-off" type="number" min="0" step="1">
+        <label for="sl-photo">Secondi per foto</label>
+        <input id="sl-photo" type="number" min="3" step="1">
+        <label><input id="sl-shuffle" type="checkbox"> Ordine casuale</label>
+        <label for="sl-folder">Cartella delle foto</label>
+        <input id="sl-folder" placeholder="/sdcard/foto">
+        <p><button class="primary" onclick="saveSlide()">Salva</button></p>
+      </div></div>
+    </div>
+
+    <div id="pane-ha" hidden>
+      <div class="card"><h2>Collegamento a Home Assistant</h2><div class="body">
+        <label for="ha-url">Indirizzo WebSocket</label>
+        <input id="ha-url" placeholder="ws://192.168.1.20:8123/api/websocket">
+        <label for="ha-token">Token di accesso</label>
+        <input id="ha-token" type="password" autocomplete="off">
+        <p class="hint" id="ha-token-hint"></p>
+        <label for="ha-dash">Dashboard</label>
+        <input id="ha-dash" placeholder="lovelace">
+        <label for="ha-view">Vista (numero)</label>
+        <input id="ha-view" type="number" min="0" value="0">
+        <label for="ha-tts">Motore vocale</label>
+        <input id="ha-tts" placeholder="tts.piper">
+        <p class="hint">Quale voce di Home Assistant legge gli avvisi ad alta
+           voce. Lo trovi in Home Assistant, in Impostazioni &gt; Dispositivi e
+           servizi &gt; Voice assistants: e&rsquo; un&rsquo;entita&rsquo; che
+           comincia per <code>tts.</code>. Lascia vuoto per
+           <code>tts.piper</code>. Serve un altoparlante collegato al pannello:
+           senza, l&rsquo;avviso resta solo scritto sullo schermo.</p>
+        <p><button class="primary" onclick="saveHA()">Salva</button></p>
+      </div></div>
+    </div>
+
+    <div id="pane-acc" hidden>
+      <div class="card"><h2>Password di amministratore</h2><div class="body">
+        <label for="ad1">Nuova password</label>
+        <input id="ad1" type="password" autocomplete="new-password">
+        <label for="ad2">Ripetila</label>
+        <input id="ad2" type="password" autocomplete="new-password">
+        <p><button class="primary" onclick="saveAdmin()">Cambia</button></p>
+      </div></div>
+      <div class="card"><h2>Accesso ospite</h2><div class="body">
+        <p class="hint" id="acc-guest-state"></p>
+        <label for="gu1">Password ospite</label>
+        <input id="gu1" type="password" autocomplete="new-password">
+        <p>
+          <button class="primary" onclick="saveGuest()">Attiva o cambia</button>
+          <button onclick="removeGuest()">Disattiva</button>
+        </p>
+        <p class="hint">L'ospite puo' sistemare le card. Non vede il collegamento
+           a Home Assistant, non cambia le password e non tocca la rete.</p>
+      </div></div>
+    </div>
+  </section>
+</main>
+<footer id="foot"></footer>
+
+<script>
+let state = {};
+let layout = null;
+let hidden = new Set();
+let extra  = {};
+let sizes  = {};            // chiave -> {columns, rows} scelti qui
+let touched = new Set();    // solo queste finiscono nei ritocchi
+let scale = 1;
+
+const $ = id => document.getElementById(id);
+
+function say(text, kind) {
+  const m = $('msg');
+  m.textContent = text;
+  m.className = 'msg show ' + (kind || '');
+  if (kind === 'ok') setTimeout(() => m.className = 'msg', 2500);
+}
+
+async function api(path, opts) {
+  const r = await fetch(path, Object.assign({ credentials: 'same-origin' }, opts || {}));
+  if (r.status === 401) { await session(); throw new Error('Serve l’accesso.'); }
+  if (!r.ok) {
+    let t = await r.text();
+    try { t = JSON.parse(t).error || t; } catch (e) {}
+    throw new Error(t || ('errore ' + r.status));
+  }
+  return r;
+}
+
+// ------------------------------------------------------------------ accesso
+
+async function session() {
+  state = await (await fetch('/api/session', { credentials: 'same-origin' })).json();
+  const logged = state.role === 'admin' || state.role === 'guest';
+  $('gate-setup').hidden = state.configured;
+  $('gate-login').hidden = !state.configured || logged;
+  $('app').hidden = !logged;
+  $('who').hidden = !logged;
+  $('btn-logout').hidden = !logged;
+  $('who').textContent = state.role === 'admin' ? 'amministratore' : 'ospite';
+  $('ha-login').hidden = !state.ha_login || logged;
+  $('ha-login-hint').hidden = !state.ha_login || logged;
+  $('ha-login0').hidden = !state.ha_login;
+  $('tab-ha').hidden = state.role !== 'admin';
+  $('tab-acc').hidden = state.role !== 'admin';
+  $('tab-slide').hidden = state.role !== 'admin';
+  if (logged) {
+    load();
+    if (state.role === 'admin') { loadHA(); guestState(); }
+  }
+}
+
+async function doSetup() {
+  const a = $('su1').value, b = $('su2').value;
+  if (a !== b) return say('Le due password non coincidono.', 'err');
+  if (a.length < 6) return say('Almeno 6 caratteri.', 'err');
+  try {
+    await api('/api/setup', { method: 'POST', body: JSON.stringify({ password: a }) });
+    say('Password creata.', 'ok');
+    session();
+  } catch (e) { say(e.message, 'err'); }
+}
+
+async function doLogin() {
+  try {
+    await api('/api/login', { method: 'POST', body: JSON.stringify({ password: $('pw').value }) });
+    $('pw').value = '';
+    $('msg').className = 'msg';
+    session();
+  } catch (e) { say(e.message, 'err'); }
+}
+
+async function logout() {
+  await fetch('/api/logout', { method: 'POST', credentials: 'same-origin' });
+  location.reload();
+}
+
+function showTab(which) {
+  for (const t of ['dash', 'slide', 'ha', 'acc']) {
+    $('pane-' + t).hidden = t !== which;
+    $('tab-' + t).classList.toggle('on', t === which);
+  }
+  if (which === 'dash') fit();
+  if (which === 'slide') loadSlide();
+}
+
+// ------------------------------------------------------- slideshow (standby)
+
+let slideCfg = null;         // configurazione attuale del pannello
+let slideMax = 4;
+let chosen   = [];           // [{id, nome}] scelti, nell'ordine (nome vuoto = quello di HA)
+let groups   = null;         // elenco di HA, caricato una volta sola
+let nameOf   = {};           // entity_id -> "Dispositivo · Sensore"
+let slideDrawn = false;      // la scheda Slideshow e' stata disegnata almeno una volta
+
+/* Solo la configurazione, senza toccare la scheda e senza scaricare l'elenco
+   di Home Assistant, che e' la parte lenta. La chiama anche l'editor, che dei
+   valori in sovrimpressione ha bisogno per sapere quali stelline accendere,
+   ma l'elenco completo non se ne fa niente. */
+async function ensureSlideCfg() {
+  if (slideCfg) return true;
+  try {
+    slideCfg = await api('/api/standby').then(r => r.json());
+  } catch (e) { say(e.message, 'err'); return false; }
+  slideMax = slideCfg.max_valori || 4;
+  chosen = (slideCfg.sovrimpressione || []).slice(0, slideMax)
+            .map(v => typeof v === 'string' ? { id: v, nome: '' } : { id: v.id, nome: v.nome || '' });
+  return true;
+}
+
+async function loadSlide() {
+  if (slideDrawn) return;    // gia' disegnata: non la rifaccio a ogni passaggio
+  if (!await ensureSlideCfg()) return;
+  slideDrawn = true;
+  $('sl-max').textContent = slideMax;
+  $('sl-after').value   = slideCfg.slideshow_dopo_min;
+  $('sl-off').value     = slideCfg.spegni_dopo_min;
+  $('sl-photo').value   = slideCfg.secondi_foto;
+  $('sl-shuffle').checked = !!slideCfg.casuale;
+  $('sl-folder').value  = slideCfg.cartella || '';
+  $('sl-ha').hidden = !slideCfg.gestito_da_ha;
+  bloccaSlide(!!slideCfg.gestito_da_ha);
+  drawChosen();
+
+  if (groups) return;          // l'elenco di HA si scarica una volta sola
+  try {
+    const g = await api('/api/entities').then(r => r.json());
+    if (g.error) { $('sl-tree').textContent = g.error; return; }
+    groups = g.gruppi || [];
+    /* Nel riquadro dei valori scelti il nome da solo non basta: quattro
+       sensori "Temperatura" sarebbero indistinguibili. */
+    for (const gr of groups) for (const v of gr.voci) nameOf[v.id] = gr.nome + ' · ' + v.nome;
+    drawTree('');
+    drawChosen();
+  } catch (e) { $('sl-tree').textContent = e.message; }
+}
+
+function drawChosen() {
+  const box = $('sl-chosen');
+  box.innerHTML = '';
+  for (let i = 0; i < slideMax; i++) {
+    const d = document.createElement('div');
+    const c = chosen[i];
+    if (!c) {
+      d.className = 'slot empty';
+      d.textContent = 'posto libero';
+      box.appendChild(d);
+      continue;
+    }
+    d.className = 'slot';
+    const src = document.createElement('div');
+    src.className = 'src';
+    src.textContent = nameOf[c.id] || c.id;
+    src.title = c.id;
+
+    /* Il nome da mostrare sullo schermo: vuoto vuol dire "quello di HA", e
+       infatti il suggerimento della casella e' proprio quello. */
+    const inp = document.createElement('input');
+    inp.value = c.nome || '';
+    inp.maxLength = 39;
+    inp.placeholder = shortName(c.id);
+    inp.oninput = () => { c.nome = inp.value; };
+
+    const del = document.createElement('button');
+    del.textContent = '×';
+    del.title = 'Togli';
+    del.onclick = () => { chosen.splice(i, 1); drawChosen(); drawTree($('sl-find').value); };
+
+    d.appendChild(src);
+    d.appendChild(inp);
+    d.appendChild(del);
+    box.appendChild(d);
+  }
+}
+
+/* Con Home Assistant al comando i campi restano visibili ma non si toccano:
+   nascondere tutto lascerebbe il dubbio che la configurazione sia sparita. */
+function bloccaSlide(si) {
+  for (const el of document.querySelectorAll('#pane-slide input, #pane-slide button'))
+    if (!el.closest('#sl-ha')) el.disabled = si;
+}
+
+async function riprendiSlide() {
+  try {
+    await api('/api/standby/locale', { method: 'POST' });
+    slideCfg = null;
+    slideDrawn = false;
+    await loadSlide();
+    say('Adesso lo slideshow lo gestisci da qui.', 'ok');
+  } catch (e) { say(e.message, 'err'); }
+}
+
+/* Solo la parte "sensore" del nome completo "Dispositivo - Sensore": e' quello
+   che Home Assistant scriverebbe sullo schermo se non si sceglie niente. */
+function shortName(id) {
+  const full = nameOf[id];
+  if (!full) return id;
+  const i = full.indexOf(' · ');
+  return i < 0 ? full : full.slice(i + 3);
+}
+
+/* L'elenco puo' avere centinaia di voci: i gruppi restano chiusi finche' non
+   si cerca qualcosa, cosi' la pagina si apre subito anche sul telefono. */
+function drawTree(filter) {
+  if (!groups) return;
+  const f = (filter || '').trim().toLowerCase();
+  const tree = $('sl-tree');
+  tree.innerHTML = '';
+  let shown = 0;
+  for (const g of groups) {
+    const hitGroup = f && g.nome.toLowerCase().includes(f);
+    const voci = f && !hitGroup
+      ? g.voci.filter(v => v.nome.toLowerCase().includes(f) || v.id.toLowerCase().includes(f))
+      : g.voci;
+    if (!voci.length) continue;
+    shown += voci.length;
+    const det = document.createElement('details');
+    if (f) det.open = true;
+    const sum = document.createElement('summary');
+    sum.textContent = g.nome;
+    if (g.stanza) {
+      const r = document.createElement('span');
+      r.className = 'room';
+      r.textContent = g.stanza;
+      sum.appendChild(r);
+    }
+    det.appendChild(sum);
+    for (const v of voci) {
+      const row = document.createElement('div');
+      row.className = 'ent' + (chosen.some(c => c.id === v.id) ? ' on' : '');
+      const l = document.createElement('div');
+      l.textContent = v.nome;
+      const s = document.createElement('div');
+      s.className = 'eid';
+      s.textContent = v.id;
+      l.appendChild(document.createElement('br'));
+      l.appendChild(s);
+      const b = document.createElement('button');
+      b.textContent = chosen.some(c => c.id === v.id) ? 'Togli' : 'Aggiungi';
+      b.onclick = () => pick(v.id);
+      row.appendChild(l);
+      row.appendChild(b);
+      det.appendChild(row);
+    }
+    tree.appendChild(det);
+  }
+  if (!shown) tree.textContent = 'Nessuna corrispondenza.';
+}
+
+function pick(id) {
+  const i = chosen.findIndex(c => c.id === id);
+  if (i >= 0) chosen.splice(i, 1);
+  else if (chosen.length >= slideMax) return say('Ci stanno solo ' + slideMax + ' valori: togline uno.', 'err');
+  else chosen.push({ id: id, nome: '' });
+  drawChosen();
+  drawTree($('sl-find').value);
+}
+
+/* Il corpo da mandare al pannello. Attenzione ai tempi e alla cartella: se la
+   scheda Slideshow non e' mai stata aperta le sue caselle sono vuote, e
+   leggerle vorrebbe dire azzerare in un colpo solo quello che c'e' nel
+   pannello. In quel caso i valori si riprendono dalla configurazione. */
+function slideBody() {
+  const dal = slideDrawn;
+  return {
+    slideshow_dopo_min: dal ? parseFloat($('sl-after').value) : slideCfg.slideshow_dopo_min,
+    spegni_dopo_min:    dal ? parseFloat($('sl-off').value)    : slideCfg.spegni_dopo_min,
+    secondi_foto:       dal ? parseInt($('sl-photo').value, 10) : slideCfg.secondi_foto,
+    casuale:            dal ? $('sl-shuffle').checked          : !!slideCfg.casuale,
+    cartella:           dal ? $('sl-folder').value.trim()      : (slideCfg.cartella || ''),
+    sovrimpressione:    chosen.map(c => ({ id: c.id, nome: (c.nome || '').trim() }))
+  };
+}
+
+async function saveSlide() {
+  try {
+    await api('/api/standby', { method: 'POST', body: JSON.stringify(slideBody()) });
+    say('Slideshow aggiornato.', 'ok');
+  } catch (e) { say(e.message, 'err'); }
+}
+
+/* La stellina sulle card dell'editor. Qui si salva subito: un pulsante che
+   promette "mostralo nello slideshow" e poi pretende che tu vada a premere
+   Salva in un'altra scheda e' un pulsante che tradisce. */
+async function slideStar(eid) {
+  if (!await ensureSlideCfg()) return;
+  if (slideCfg.gestito_da_ha)
+    return say('Lo slideshow lo comanda Home Assistant: si cambia da li\'.', 'err');
+
+  const i = chosen.findIndex(c => c.id === eid);
+  if (i >= 0) chosen.splice(i, 1);
+  else if (chosen.length >= slideMax)
+    return say('Ci stanno solo ' + slideMax + ' valori: togline uno dalla scheda Slideshow.', 'err');
+  else chosen.push({ id: eid, nome: '' });
+
+  try {
+    await api('/api/standby', { method: 'POST', body: JSON.stringify(slideBody()) });
+  } catch (e) {
+    /* Non e' passato: rimetto l'elenco com'era, se no la pagina mostrerebbe
+       una stellina accesa e il pannello non saprebbe niente. */
+    slideCfg = null;
+    await ensureSlideCfg();
+    refreshStars();
+    return say(e.message, 'err');
+  }
+  slideCfg.sovrimpressione = chosen.map(c => ({ id: c.id, nome: c.nome || '' }));
+  refreshStars();
+  if (slideDrawn) { drawChosen(); drawTree($('sl-find').value); }
+  say(i >= 0 ? 'Tolto dallo slideshow.' : 'Aggiunto allo slideshow.', 'ok');
+}
+
+function refreshStars() {
+  for (const b of document.querySelectorAll('#canvas .sld')) {
+    const on = chosen.some(c => c.id === b.dataset.ent);
+    b.textContent = on ? '★' : '☆';
+    b.title = on ? 'Togli dallo slideshow' : 'Mostra nello slideshow';
+    b.classList.toggle('on', on);
+  }
+}
+
+// ------------------------------------------------------------------ editor
+
+async function load() {
+  try {
+    const [l, o] = await Promise.all([
+      api('/api/layout').then(r => r.json()),
+      api('/api/overrides').then(r => r.json())
+    ]);
+    if (l.error) { say(l.error, 'err'); $('canvas').innerHTML = ''; return; }
+    layout = l;
+    hidden = new Set(o.hidden || []);
+    extra  = o.extra || {};
+    sizes  = Object.assign({}, o.size || {});
+    touched = new Set(Object.keys(sizes));
+    $('view').textContent = l.view_key + (l.view_title ? ' - ' + l.view_title : '');
+    render();
+  } catch (e) { say(e.message, 'err'); }
+}
+
+const secContainers = () => layout.containers.filter(c => c.id !== '@sections');
+const sectionList   = () => layout.containers.find(c => c.id === '@sections');
+
+function cardHeight(it) {
+  const r = (sizes[it.k] && sizes[it.k].rows !== undefined) ? sizes[it.k].rows : it.rows;
+  return r > 0 ? r * layout.row_h + (r - 1) * layout.gap : 0;
+}
+function cardCols(it) {
+  const c = (sizes[it.k] && sizes[it.k].columns) || it.columns || 12;
+  return Math.max(1, Math.min(12, c));
+}
+
+function render() {
+  const cv = $('canvas');
+  cv.innerHTML = '';
+  cv.style.width = layout.screen_w + 'px';
+  cv.style.gap = (layout.gap * 2) + 'px';
+
+  for (const c of secContainers()) {
+    const sec = document.createElement('div');
+    sec.className = 'sec';
+    sec.dataset.cid = c.id;
+    if (hidden.has(c.id)) sec.classList.add('off');
+
+    const head = document.createElement('div');
+    head.className = 'head';
+    const nm = document.createElement('span');
+    nm.className = 'nm';
+    nm.textContent = c.title;
+    head.appendChild(nm);
+    if (layout.layout === 'sections') {
+      head.append(
+        mini('←', () => moveSection(c.id, -1)),
+        mini('→', () => moveSection(c.id, 1)),
+        mini(hidden.has(c.id) ? '○' : '●', () => toggleHide(c.id))
+      );
+    }
+    sec.appendChild(head);
+
+    const g = document.createElement('div');
+    g.className = 'grid';
+    g.dataset.cid = c.id;
+    g.style.gap = layout.gap + 'px';
+    for (const it of c.items) g.appendChild(cardEl(it));
+    sec.appendChild(g);
+    cv.appendChild(sec);
+  }
+  fit();
+  state_line();
+  /* Le stelline vogliono sapere cosa c'e' gia' nello slideshow. La
+     configurazione arriva quando arriva: intanto la tela e' disegnata, e al
+     ritorno le accende. */
+  if (state && state.role === 'admin') ensureSlideCfg().then(ok => { if (ok) refreshStars(); });
+}
+
+function mini(txt, fn) {
+  const b = document.createElement('button');
+  b.textContent = txt;
+  b.style.cssText = 'padding:2px 8px;font-size:13px;background:#2c3242;color:#e8eaed;border-color:#3a4152';
+  b.onclick = e => { e.stopPropagation(); fn(); };
+  return b;
+}
+
+function cardEl(it) {
+  const d = document.createElement('div');
+  d.className = 'it';
+  d.dataset.k = it.k;
+  d.style.gridColumn = 'span ' + cardCols(it);
+  const h = cardHeight(it);
+  if (h) d.style.height = h + 'px'; else d.style.minHeight = layout.row_h + 'px';
+  if (hidden.has(it.k)) d.classList.add('off');
+
+  const lb = document.createElement('div');
+  lb.className = 'lb';
+  lb.textContent = it.label || it.k;
+  const sub = document.createElement('div');
+  sub.className = 'sub';
+  d.append(lb, sub);
+
+  const eye = document.createElement('span');
+  eye.className = 'eye';
+  eye.textContent = hidden.has(it.k) ? '○' : '●';
+  eye.title = 'Mostra o nascondi sul pannello';
+  eye.onpointerdown = e => e.stopPropagation();
+  eye.onclick = e => { e.stopPropagation(); toggleHide(it.k); };
+  d.appendChild(eye);
+
+  /* Solo per l'amministratore: la scheda Slideshow e' sua, e /api/standby
+     rifiuta gli altri. All'ospite un pulsante che da' sempre errore. */
+  if (it.entity && state && state.role === 'admin') {
+    const st = document.createElement('span');
+    st.className = 'sld';
+    st.dataset.ent = it.entity;
+    st.onpointerdown = e => e.stopPropagation();
+    st.onclick = e => { e.stopPropagation(); slideStar(it.entity); };
+    d.appendChild(st);
+  }
+
+  const hdl = document.createElement('div');
+  hdl.className = 'hdl';
+  hdl.title = 'Trascina per ridimensionare';
+  hdl.onpointerdown = e => startResize(e, d, it);
+  d.appendChild(hdl);
+
+  d.onpointerdown = e => startDrag(e, d);
+  d._it = it;
+  refreshSub(d, it);
+  return d;
+}
+
+function refreshSub(d, it) {
+  const r = (sizes[it.k] && sizes[it.k].rows !== undefined) ? sizes[it.k].rows : it.rows;
+  d.querySelector('.sub').textContent =
+    it.type + ' · ' + cardCols(it) + '×' + (r > 0 ? r : 'auto');
+}
+
+function toggleHide(k) {
+  if (hidden.has(k)) hidden.delete(k); else hidden.add(k);
+  render();
+}
+
+function moveSection(cid, dir) {
+  const list = secContainers().map(c => c.id);
+  const i = list.indexOf(cid);
+  const j = i + dir;
+  if (j < 0 || j >= list.length) return;
+  const all = layout.containers;
+  const a = all.findIndex(c => c.id === list[i]);
+  const b = all.findIndex(c => c.id === list[j]);
+  [all[a], all[b]] = [all[b], all[a]];
+  render();
+}
+
+// ---- trascinamento ----
+let drag = null;
+
+function startDrag(e, el) {
+  if (e.button !== undefined && e.button !== 0) return;
+  drag = { el, x: e.clientX, y: e.clientY, moved: false };
+  el.setPointerCapture(e.pointerId);
+  el.onpointermove = onDragMove;
+  el.onpointerup = el.onpointercancel = endDrag;
+}
+
+function onDragMove(e) {
+  if (!drag) return;
+  if (!drag.moved) {
+    if (Math.abs(e.clientX - drag.x) + Math.abs(e.clientY - drag.y) < 6) return;
+    drag.moved = true;
+    drag.el.classList.add('drag');
+  }
+  // sposto davvero l'elemento: le altre card si riassestano sotto al dito
+  const under = document.elementsFromPoint(e.clientX, e.clientY);
+  const grid = under.find(o => o.classList && o.classList.contains('grid'));
+  if (!grid) return;
+  const target = under.find(o => o.classList && o.classList.contains('it') && o !== drag.el);
+  if (target && target.parentNode === grid) {
+    const r = target.getBoundingClientRect();
+    const after = (e.clientX - r.left) > r.width / 2 || (e.clientY - r.top) > r.height / 2;
+    grid.insertBefore(drag.el, after ? target.nextSibling : target);
+  } else if (drag.el.parentNode !== grid) {
+    grid.appendChild(drag.el);
+  }
+}
+
+function endDrag(e) {
+  if (!drag) return;
+  drag.el.classList.remove('drag');
+  drag.el.onpointermove = drag.el.onpointerup = drag.el.onpointercancel = null;
+  drag = null;
+  state_line();
+}
+
+// ---- ridimensionamento ----
+let rz = null;
+
+function startResize(e, el, it) {
+  e.stopPropagation();
+  e.preventDefault();
+  const grid = el.parentNode;
+  const gw = grid.getBoundingClientRect().width / scale;   // larghezza in pixel del pannello
+  const colw = (gw - layout.gap * 11) / 12;
+  rz = { el, it, colw, x: e.clientX, y: e.clientY,
+         cols: cardCols(it),
+         rows: (sizes[it.k] && sizes[it.k].rows !== undefined) ? sizes[it.k].rows : it.rows };
+  el.setPointerCapture(e.pointerId);
+  el.onpointermove = onResize;
+  el.onpointerup = el.onpointercancel = endResize;
+}
+
+function onResize(e) {
+  if (!rz) return;
+  const dx = (e.clientX - rz.x) / scale;
+  const dy = (e.clientY - rz.y) / scale;
+  let cols = Math.round(rz.cols + dx / (rz.colw + layout.gap));
+  cols = Math.max(1, Math.min(12, cols));
+  let rows = rz.rows;
+  if (rows > 0 || Math.abs(dy) > layout.row_h / 2) {
+    const base = rows > 0 ? rows : 1;
+    rows = Math.max(1, Math.round(base + dy / (layout.row_h + layout.gap)));
+  }
+  sizes[rz.it.k] = { columns: cols, rows: rows };
+  touched.add(rz.it.k);
+  rz.el.style.gridColumn = 'span ' + cols;
+  rz.el.style.height = (rows > 0 ? rows * layout.row_h + (rows - 1) * layout.gap : layout.row_h) + 'px';
+  refreshSub(rz.el, rz.it);
+}
+
+function endResize(e) {
+  if (!rz) return;
+  rz.el.onpointermove = rz.el.onpointerup = rz.el.onpointercancel = null;
+  rz = null;
+  state_line();
+}
+
+// ---- tela in scala ----
+function fit() {
+  if (!layout) return;
+  const wrap = $('wrap'), cv = $('canvas');
+  scale = Math.min(1, wrap.clientWidth / layout.screen_w);
+  cv.style.transform = 'scale(' + scale + ')';
+  wrap.style.height = (cv.scrollHeight * scale) + 'px';
+}
+addEventListener('resize', fit);
+
+function state_line() {
+  const n = document.querySelectorAll('.it').length;
+  $('dash-state').textContent =
+    n + ' card, ' + hidden.size + ' nascoste, ' + touched.size + ' ridimensionate';
+}
+
+// ---- salvataggio ----
+function current() {
+  const order = {};
+  const secs = secContainers().map(c => c.id);
+  order['@sections'] = secs;
+  document.querySelectorAll('.grid[data-cid]').forEach(g => {
+    order[g.dataset.cid] = [...g.children].map(el => el.dataset.k);
+  });
+  const size = {};
+  for (const k of touched) if (sizes[k]) size[k] = sizes[k];
+  return { order, hidden: [...hidden], size, extra };
+}
+
+async function save() {
+  try {
+    await api('/api/overrides', { method: 'PUT', body: JSON.stringify(current()) });
+    say('Salvato: il pannello si sta ridisegnando.', 'ok');
+    setTimeout(() => { if (!$('shot-box').hidden) shoot(); }, 2500);
+  } catch (e) { say('Salvataggio non riuscito: ' + e.message, 'err'); }
+}
+
+async function resetAll() {
+  if (!confirm('Rimetto la dashboard esattamente come su Home Assistant?')) return;
+  try {
+    await api('/api/overrides', { method: 'PUT', body: JSON.stringify({ order: {}, hidden: [], size: {}, extra: {} }) });
+    extra = {}; sizes = {}; touched = new Set();
+    say('Ritocchi rimossi.', 'ok');
+    setTimeout(load, 1200);
+  } catch (e) { say('Non riuscito: ' + e.message, 'err'); }
+}
+
+async function reloadHA() {
+  try {
+    await api('/api/reload', { method: 'POST' });
+    say('Richiesta la dashboard aggiornata a Home Assistant...', 'ok');
+    setTimeout(load, 1500);
+  } catch (e) { say('Non riuscito: ' + e.message, 'err'); }
+}
+
+// ---- foto vera dello schermo ----
+async function shoot() {
+  try {
+    $('shot-box').hidden = false;
+    const buf = await (await api('/api/screenshot?scale=2')).arrayBuffer();
+    const v = new DataView(buf);
+    const w = v.getUint16(0, true), h = v.getUint16(2, true);
+    const cn = $('shot');
+    cn.width = w; cn.height = h;
+    const ctx = cn.getContext('2d');
+    const img = ctx.createImageData(w, h);
+    for (let i = 0; i < w * h; i++) {
+      const p = v.getUint16(4 + i * 2, true);
+      img.data[i * 4]     = ((p >> 11) & 0x1f) * 255 / 31;
+      img.data[i * 4 + 1] = ((p >> 5) & 0x3f) * 255 / 63;
+      img.data[i * 4 + 2] = (p & 0x1f) * 255 / 31;
+      img.data[i * 4 + 3] = 255;
+    }
+    ctx.putImageData(img, 0, 0);
+  } catch (e) { say('Foto non riuscita: ' + e.message, 'err'); }
+}
+
+// ------------------------------------------------------------------ Home Assistant
+
+async function loadHA() {
+  try {
+    const c = await api('/api/config').then(r => r.json());
+    $('ha-url').value = c.url || '';
+    $('ha-dash').value = c.dashboard || '';
+    $('ha-view').value = c.view || 0;
+    $('ha-tts').value = c.tts || '';
+    if (state.ha_paired) {
+      $('ha-token-hint').textContent =
+        'Il pannello e’ abbinato a Home Assistant: si rinnova da solo il permesso, ' +
+        'qui non serve nessun token. Per togliergli l’accesso vai in Home Assistant, ' +
+        'Profilo > Sicurezza > Sessioni.';
+      return;
+    }
+    $('ha-token-hint').textContent = c.token_set
+      ? 'Un token e’ gia’ salvato. Per sicurezza non viene mai rimandato al browser: lascia il campo vuoto per tenerlo, riempilo solo per sostituirlo.'
+      : 'Nessun token salvato: se hai autorizzato il pannello con il tuo account di Home Assistant non serve.';
+  } catch (e) { /* non amministratore */ }
+}
+
+async function saveHA() {
+  const body = {
+    url: $('ha-url').value.trim(),
+    dashboard: $('ha-dash').value.trim(),
+    view: parseInt($('ha-view').value || '0', 10),
+    tts: $('ha-tts').value.trim()
+  };
+  const tok = $('ha-token').value;
+  if (tok) body.token = tok;
+  try {
+    await api('/api/config', { method: 'POST', body: JSON.stringify(body) });
+    $('ha-token').value = '';
+    say('Salvato: il pannello si ricollega a Home Assistant.', 'ok');
+    loadHA();
+  } catch (e) { say(e.message, 'err'); }
+}
+
+// ------------------------------------------------------------------ accessi
+
+function guestState() {
+  $('acc-guest-state').textContent = state.guest_enabled
+    ? 'L’accesso ospite e’ attivo.'
+    : 'L’accesso ospite non e’ attivo.';
+}
+
+async function savePasswords(body, ok_msg) {
+  try {
+    await api('/api/passwords', { method: 'POST', body: JSON.stringify(body) });
+    say(ok_msg, 'ok');
+    setTimeout(() => location.reload(), 1200);
+  } catch (e) { say(e.message, 'err'); }
+}
+
+function saveAdmin() {
+  const a = $('ad1').value, b = $('ad2').value;
+  if (a !== b) return say('Le due password non coincidono.', 'err');
+  if (a.length < 6) return say('Almeno 6 caratteri.', 'err');
+  savePasswords({ admin: a }, 'Password cambiata: rientra con quella nuova.');
+}
+
+function saveGuest() {
+  const g = $('gu1').value;
+  if (g.length < 6) return say('Almeno 6 caratteri.', 'err');
+  savePasswords({ guest: g }, 'Accesso ospite attivo.');
+}
+
+function removeGuest() {
+  if (!confirm('Disattivo l’accesso ospite?')) return;
+  savePasswords({ guest: '' }, 'Accesso ospite disattivato.');
+}
+
+// ------------------------------------------------------------------ avvio
+
+const qs = new URLSearchParams(location.search);
+const authErr = qs.get('auth_error');
+const authOk  = qs.get('auth_ok');
+if (authErr) say(authErr, 'err');
+if (authOk)  say('Autorizzato da Home Assistant come ' + authOk + '.', 'ok');
+if (authErr || authOk) history.replaceState(null, '', location.pathname);
+if (location.protocol === 'http:') {
+  $('foot').textContent = 'Collegamento non cifrato: apri la pagina con https:// per proteggere la password.';
+}
+session();
+</script>
+</html>

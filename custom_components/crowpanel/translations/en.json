@@ -1,0 +1,90 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "CrowPanel displays",
+        "description": "Nothing to fill in: panels introduce themselves when they connect to Home Assistant and show up here as devices. If you see none, check that the panel is powered on and connected to this Home Assistant."
+      }
+    },
+    "abort": {
+      "already_configured": "Already added: new panels appear on their own."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Which panel",
+        "data": {
+          "pannello": "Panel"
+        }
+      },
+      "pannello": {
+        "title": "Slideshow on {pannello}",
+        "description": "While the photos cycle, the panel shows the time, the date and up to {quanti} values. The label is what appears above the value: leave it empty to use the Home Assistant name, which is often long and technical.",
+        "data": {
+          "gestito_da_ha": "Manage the slideshow from here",
+          "valore_0": "First value",
+          "nome_0": "Label for the first value",
+          "valore_1": "Second value",
+          "nome_1": "Label for the second value",
+          "valore_2": "Third value",
+          "nome_2": "Label for the third value",
+          "valore_3": "Fourth value",
+          "nome_3": "Label for the fourth value",
+          "slideshow_dopo_min": "Start slideshow after (minutes idle)",
+          "spegni_dopo_min": "Turn the screen off after a further (minutes)",
+          "secondi_foto": "Seconds per photo",
+          "casuale": "Shuffle",
+          "cartella": "Photo folder on the panel"
+        },
+        "data_description": {
+          "gestito_da_ha": "Clear this and the panel goes back to managing the slideshow itself, from its own web page."
+        }
+      }
+    },
+    "abort": {
+      "nessun_pannello": "No panel has introduced itself yet. Power one on and wait a minute."
+    }
+  },
+  "entity": {
+    "switch": {
+      "schermo": {
+        "name": "Screen"
+      }
+    },
+    "number": {
+      "luminosita": {
+        "name": "Brightness"
+      }
+    },
+    "sensor": {
+      "acceso_da": {
+        "name": "Uptime"
+      },
+      "ram_interna": {
+        "name": "Free internal RAM"
+      },
+      "ram_psram": {
+        "name": "Free PSRAM"
+      },
+      "recuperi": {
+        "name": "Radio link recoveries"
+      },
+      "dashboard": {
+        "name": "Dashboard shown"
+      },
+      "riavvio": {
+        "name": "Last restart reason"
+      },
+      "alimentazione_mv": {
+        "name": "Supply voltage"
+      },
+      "alimentazione_pct": {
+        "name": "Charge"
+      },
+      "alimentazione_stato": {
+        "name": "Power state (raw)"
+      }
+    }
+  }
+}
