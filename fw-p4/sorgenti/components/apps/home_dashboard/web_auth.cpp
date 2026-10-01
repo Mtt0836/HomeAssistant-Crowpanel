@@ -190,7 +190,7 @@ web_role_t web_auth_role_of(const char *sid)
     for (int i = 0; i < SESSIONS; i++) {
         if (s_sess[i].role == WEB_ROLE_NONE) continue;
         if (s_sess[i].expires < now) { s_sess[i].role = WEB_ROLE_NONE; continue; }
-        if (strcmp(s_sess[i].sid, sid) == 0) {
+        if (secret_str_equal(s_sess[i].sid, sid)) {
             s_sess[i].expires = now + SESSION_US;    // finche' si usa, non scade
             return s_sess[i].role;
         }
@@ -202,7 +202,7 @@ void web_auth_logout(const char *sid)
 {
     if (!sid) return;
     for (int i = 0; i < SESSIONS; i++)
-        if (s_sess[i].role != WEB_ROLE_NONE && strcmp(s_sess[i].sid, sid) == 0)
+        if (s_sess[i].role != WEB_ROLE_NONE && secret_str_equal(s_sess[i].sid, sid))
             s_sess[i].role = WEB_ROLE_NONE;
 }
 

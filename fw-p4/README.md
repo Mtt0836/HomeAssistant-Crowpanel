@@ -63,8 +63,16 @@ ricaricare.
 
 ## Compilare
 
-Serve **ESP-IDF 5.4.4**. Altre versioni non sono state provate; la 5.5 in
-particolare cambia cose nel BSP.
+Serve **ESP-IDF 6.1**. Fino alla versione 0.1.0 serviva la 5.4.4: il
+passaggio alla 6.1 ha richiesto parecchi aggiustamenti (componenti tolti dal
+framework, mbedTLS 4 con le PSA Crypto API, i sotto-driver da chiedere uno per
+uno) e il progetto adesso compila solo con quella.
+
+Una cosa da sapere se il pannello non parte dopo averlo compilato da se': la
+6.1 punta di serie al silicio ESP32-P4 revisione 3.x, mentre i CrowPanel in
+giro sono revisione 1.x. La scelta e' gia' scritta in `sdkconfig.defaults`
+(`CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y`), quindi non c'e' niente da fare: va
+solo lasciata dov'e'.
 
 ```bash
 cd sorgenti

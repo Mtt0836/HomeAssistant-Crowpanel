@@ -7,8 +7,7 @@
 #include "esp_timer.h"
 #include "nvs_flash.h"
 #include "nvs.h"
-#include "mbedtls/pkcs5.h"
-#include "mbedtls/md.h"
+#include "home_dashboard/secret_hash.h"
 
 static const char *TAG = "pin_lock";
 
@@ -82,11 +81,17 @@ static void save_fails(void)
 
 // ------------------------------------------------------------------ impronta
 
+/* Il conto lo fa secret_hash, che e' lo stesso che usa la pagina web: stesso
+   sale da 16 byte, stessa impronta da 32, stessi 20000 giri. Erano due copie
+   della stessa PBKDF2, e in ESP-IDF 6 si sono rotte tutte e due insieme quando
+   mbedtls/pkcs5.h e' diventato privato. Adesso e' una sola: il PIN gia' salvato
+   continua a corrispondere perche' i parametri non sono cambiati. */
+static_assert(SALT_LEN == SECRET_SALT_LEN && HASH_LEN == SECRET_HASH_LEN,
+              "il PIN e la password della pagina devono usare le stesse misure");
+
 static void derive(const char *pin, const uint8_t *salt, uint8_t *out)
 {
-    mbedtls_pkcs5_pbkdf2_hmac_ext(MBEDTLS_MD_SHA256,
-                                  (const unsigned char *)pin, strlen(pin),
-                                  salt, SALT_LEN, PBKDF2_ITER, HASH_LEN, out);
+    secret_hash_make(pin, salt, out);
 }
 
 bool pin_lock_is_set(void) { return s_set; }

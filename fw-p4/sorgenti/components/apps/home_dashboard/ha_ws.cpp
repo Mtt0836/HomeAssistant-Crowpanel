@@ -213,6 +213,19 @@ void ha_ws_call_service(const char *domain, const char *service, const char *ent
     ha_ws_call_service_data(domain, service, entity_id, NULL);
 }
 
+void ha_ws_call_service_many(const char *domain, const char *service, const char *entity_ids)
+{
+    if (!s_authenticated || !entity_ids || !*entity_ids) return;
+    /* Un solo messaggio per tutte le entita' invece di uno ciascuna. Non e'
+       una raffinatezza: le raffiche di messaggi sono proprio cio' che il
+       collegamento SDIO verso il C6 regge peggio, e una card che accende otto
+       luci ne manderebbe otto di fila. */
+    std::string b = std::string("\"type\":\"call_service\",\"domain\":\"") + domain +
+                    "\",\"service\":\"" + service +
+                    "\",\"target\":{\"entity_id\":[" + entity_ids + "]}";
+    ws_send_cmd(b);
+}
+
 bool ha_ws_connected(void) { return s_connected && s_authenticated; }
 
 int ha_ws_request(const char *body, ha_result_cb_t cb, void *ctx)

@@ -85,6 +85,14 @@ void ha_ws_call_service(const char *domain, const char *service, const char *ent
 // "\"temperature\":20.5" per climate.set_temperature.
 void ha_ws_call_service_data(const char *domain, const char *service,
                              const char *entity_id, const char *extra);
+
+// Lo stesso servizio a piu' entita' in un colpo solo: entity_ids sono gli id
+// gia' scritti come elenco JSON senza parentesi quadre, per esempio
+//   "\"light.cucina\",\"light.sala\""
+// Un messaggio invece di uno per entita': le raffiche sono cio' che il
+// collegamento SDIO verso il C6 sopporta peggio.
+void ha_ws_call_service_many(const char *domain, const char *service,
+                             const char *entity_ids);
 bool ha_ws_connected(void);
 
 #ifdef __cplusplus

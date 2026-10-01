@@ -12,7 +12,6 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
-#include "esp_dma_utils.h"
 #include "esp_random.h"
 #include "cJSON.h"
 #include "lvgl.h"
@@ -200,11 +199,13 @@ static uint8_t *s_ponte = NULL;
 static void ponte_prendi(void)
 {
     if (s_ponte) return;
-    esp_dma_mem_info_t mi = {};
-    mi.extra_heap_caps     = MALLOC_CAP_INTERNAL;
-    mi.dma_alignment_bytes = 64;
-    void *p = NULL;
-    if (esp_dma_capable_malloc(FETTA, &mi, &p, NULL) == ESP_OK && p) {
+    /* In ESP-IDF 6 esp_dma_capable_malloc non c'e' piu': la guida di migrazione
+       dice di usare heap_caps_malloc con MALLOC_CAP_DMA|MALLOC_CAP_CACHE_ALIGNED,
+       che chiede la stessa cosa - memoria che il DMA sa scrivere, allineata alla
+       linea di cache - senza passare da una funzione di mezzo. */
+    void *p = heap_caps_malloc(FETTA, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA |
+                                      MALLOC_CAP_CACHE_ALIGNED);
+    if (p) {
         s_ponte = (uint8_t *)p;
         return;
     }

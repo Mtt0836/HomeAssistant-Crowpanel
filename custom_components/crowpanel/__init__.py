@@ -229,6 +229,16 @@ async def _registra_servizi(hass: HomeAssistant) -> None:
     hass.services.async_register(DOMAIN, SERVIZIO_AVVISO, avviso, SCHEMA_AVVISO)
     hass.services.async_register(DOMAIN, SERVIZIO_INVIA, invia, SCHEMA_INVIA)
 
+    # Salvataggio e ripristino: stanno in un file loro perche' sono un pezzo a
+    # se', con un comando WebSocket e una vista HTTP tutti suoi.
+    from .backup import registra as registra_backup
+    await registra_backup(hass, store)
+
+    # Le foto dello slideshow: anche queste un pezzo a se', con la conversione
+    # che vuole Pillow e una vista HTTP tutta sua.
+    from .foto import registra as registra_foto
+    await registra_foto(hass, store)
+
 
 # -------------------------------------------------------------------- avvio
 
@@ -243,6 +253,8 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         hass.data[DOMAIN] = Pannelli(hass)
     websocket_api.async_register_command(hass, ws_announce)
     websocket_api.async_register_command(hass, ws_state)
+    from .backup import ws_backup
+    websocket_api.async_register_command(hass, ws_backup)
     return True
 
 

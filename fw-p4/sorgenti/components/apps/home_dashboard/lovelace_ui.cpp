@@ -1,4 +1,8 @@
 #include "lovelace_ui.h"
+#include "energy_model.h"
+#include "ha_http.h"
+#include "web_image.h"
+#include "ha_config.h"      // HA_URL_MAX: calendario e registro compongono un indirizzo
 #include "json_escape.h"
 #include "mdi_icon.h"
 #include <string.h>
@@ -8,6 +12,7 @@
 #include <vector>
 #include <map>
 #include <algorithm>
+#include <utility>        // std::move: i dati dei grafici si consegnano, non si ricopiano
 #include <ctype.h>
 #include <math.h>
 #include <time.h>
@@ -59,6 +64,10 @@ struct Entity {
        card guardano prima lo stato: a luce spenta la luminosita' non si
        mostra, qualunque numero sia rimasto qui. */
     double brightness = -1;      // light: 0..255
+    double umidita_ora = NAN;    // humidifier: quella misurata
+    double umidita_set = NAN;    // humidifier: quella voluta
+    double umidita_min = 0, umidita_max = 100;
+    std::string modo;            // humidifier: mode / climate: hvac_mode
     double temp_now   = NAN;     // climate: temperatura misurata
     double temp_set   = NAN;     // climate: temperatura voluta
     double temp_min   = 7, temp_max = 35, temp_step = 0.5;
@@ -70,7 +79,10 @@ struct Entity {
 };
 
 enum BindKind { B_TILE, B_VALUE, B_BIGVALUE, B_NAME, B_SWITCH, B_BUTTON, B_GAUGE, B_WEATHER,
-                B_LIGHT, B_CLIMATE, B_MEDIA };
+                B_LIGHT, B_CLIMATE, B_MEDIA,
+                B_ALERT,      // card "alert": il riquadro si colora quando e' acceso
+                B_UMID,       // card "humidifier"
+                B_ALLARME };  // card "alarm-panel"
 
 struct Bind {
     std::string eid;
@@ -496,6 +508,16 @@ static lv_obj_t *mk_icon(lv_obj_t *parent, int size)
     return c;
 }
 
+/* Le card nuove stanno in fondo, vicino allo smistamento, ma refresh() deve
+   poterle richiamare: qui si dice solo che esistono. */
+struct Umid;
+struct Allarme;
+static void alert_refresh(Bind &b);
+static void umid_refresh(Umid *u, const std::string &eid);
+static void allarme_refresh(Allarme *a);
+extern std::vector<Umid *> s_umid;
+extern std::vector<Allarme *> s_allarmi;
+
 static void refresh(Bind &b)
 {
     const std::string name = sanitize(display_name(b.eid, b.name_override).c_str());
@@ -524,6 +546,15 @@ static void refresh(Bind &b)
         break;
     case B_GAUGE:
         if (b.extra >= 0 && b.extra < (int)s_gauges.size()) gauge_refresh(s_gauges[b.extra], b.eid);
+        break;
+    case B_ALERT:
+        alert_refresh(b);
+        break;
+    case B_UMID:
+        if (b.extra >= 0 && b.extra < (int)s_umid.size()) umid_refresh(s_umid[b.extra], b.eid);
+        break;
+    case B_ALLARME:
+        if (b.extra >= 0 && b.extra < (int)s_allarmi.size()) allarme_refresh(s_allarmi[b.extra]);
         break;
     case B_LIGHT:
         if (b.extra >= 0 && b.extra < (int)s_luci.size()) luce_refresh(s_luci[b.extra], b.eid);
@@ -657,14 +688,386 @@ static int card_rows_height(const cJSON *card)
 
 // ------------------------------------------------------------------ card
 
-
 static void render_card(lv_obj_t *parent, const cJSON *card, int w, int h);
+
+
+
+
+
+// ------------------------------------------------------------------ Energia
+//
+// Le card del pannello Energia di Home Assistant. Non leggono entita': leggono
+// il modello in energy_model.cpp, che a sua volta legge le preferenze Energia
+// dell'utente. Per questo funzionano con qualunque configurazione - chi ha solo
+// il contatore, chi ha i pannelli senza batteria, chi ha anche gas e acqua -
+// senza che ci sia scritto da nessuna parte il nome di un sensore.
+
+#define C_SOLE      lv_color_hex(0xff9800)
+#define C_RETE      lv_color_hex(0x488fc2)
+#define C_IMMESSO   lv_color_hex(0x8353d1)
+#define C_BATT      lv_color_hex(0x4db6ac)
+#define C_CASA      lv_color_hex(0x9e9e9e)
+#define C_GASC      lv_color_hex(0x8b6d5c)
+#define C_ACQUA     lv_color_hex(0x4fc3f7)
+/* Il grigio della parte spenta delle lancette. Lo stesso valore c'e' piu'
+   avanti come C_GAUGE_BG, ma quella riga sta sotto a questo blocco e il
+   compilatore legge dall'alto. */
+#define C_ARCO_BG   lv_color_hex(0x3a3d42)
+
+static bool is_energy_card(const std::string &t) { return t.rfind("energy-", 0) == 0; }
+
+/* Il registro delle card dell'energia presenti nella vista.
+
+   Il contenitore si crea una volta sola, quando la vista viene costruita; il
+   contenuto si rifa' dentro lo stesso contenitore ogni volta che arrivano
+   numeri nuovi. Ricostruire l'intera vista sarebbe stato molto piu' semplice,
+   ma ogni cinque minuti l'utente si vedrebbe saltare via lo scorrimento sotto
+   le dita mentre sta leggendo. */
+struct EnCard {
+    lv_obj_t   *box;
+    const cJSON *card;      // vive dentro s_view, come le specifiche dei grafici
+    std::string tipo;
+    int w, h;
+};
+static std::vector<EnCard> s_encards;
+
+/* Quante cifre ha senso mostrare: sotto i 10 kWh il decimo conta, sopra i 100
+   e' rumore. La pagina Energia di HA si comporta cosi' e l'occhio ci e'
+   abituato. */
+static std::string kwh(double v, const char *unita = "kWh")
+{
+    char b[48];
+    double a = fabs(v);
+    if (a < 10)       snprintf(b, sizeof(b), "%.2f %s", v, unita);
+    else if (a < 100) snprintf(b, sizeof(b), "%.1f %s", v, unita);
+    else              snprintf(b, sizeof(b), "%.0f %s", v, unita);
+    return b;
+}
+
+/* Titolo della card e, se non c'e' niente da mostrare, il motivo. Ritorna
+   false quando la card non deve disegnare altro. */
+static bool energia_testa(lv_obj_t *c, const cJSON *card, int w,
+                          const char *titolo_def, const EnergyModel *m, bool serve)
+{
+    const char *tit = jstr(card, "title");
+    mk_label(c, sanitize(tit ? tit : titolo_def), &lv_font_montserrat_18, C_TEXT, w - 24);
+
+    const char *guaio = NULL;
+    if (!m->errore.empty())   guaio = m->errore.c_str();
+    else if (!m->prefs_lette) guaio = "Leggo la configurazione Energia...";
+    else if (!serve)          guaio = "Non configurato in Home Assistant";
+    else if (!m->dati_pronti) guaio = "Raccolgo i dati...";
+    if (guaio) {
+        mk_label(c, guaio, &lv_font_montserrat_14, C_TEXT2, w - 24);
+        return false;
+    }
+    return true;
+}
+
+/* Una riga "icona - nome - valore", il mattone di quasi tutte queste card. */
+static void riga_energia(lv_obj_t *parent, int w, const char *icona, lv_color_t col,
+                         const char *nome, const std::string &val)
+{
+    lv_obj_t *r = mk_box(parent, w, 34);
+    lv_obj_set_flex_flow(r, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(r, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    lv_obj_t *i = mk_icon(r, 22);
+    lv_obj_set_style_bg_color(i, C_ICON_OFF, 0);
+    char gl[8];
+    lv_obj_t *g = lv_obj_get_child(i, 0);
+    lv_label_set_text(g, mdi_icon_text(icona, gl, sizeof(gl)) ? gl : "");
+    lv_obj_set_style_text_color(g, col, 0);
+
+    lv_obj_t *n = mk_label(r, nome, &lv_font_montserrat_14, C_TEXT2, w / 2);
+    lv_obj_set_flex_grow(n, 1);
+    mk_label(r, val, &lv_font_montserrat_16, C_TEXT, w / 2);
+}
+
+// ---- distribuzione: da dove arriva la corrente che consumi ----
+static void fill_distribution(lv_obj_t *c, const cJSON *card, int w, int h)
+{
+    const EnergyModel *m = energy_model_get();
+    if (!energia_testa(c, card, w, "Distribuzione", m,
+                       m->c_e_rete || m->c_e_solare || m->c_e_batteria)) return;
+    int iw = w - 24;
+    if (m->c_e_solare)
+        riga_energia(c, iw, "weather-sunny", C_SOLE, "Fotovoltaico", kwh(m->solare));
+    if (m->c_e_rete) {
+        riga_energia(c, iw, "transmission-tower", C_RETE, "Dalla rete", kwh(m->rete_presa));
+        riga_energia(c, iw, "transmission-tower", C_IMMESSO, "In rete", kwh(m->rete_immessa));
+    }
+    if (m->c_e_batteria) {
+        riga_energia(c, iw, "battery", C_BATT, "Dalla batteria", kwh(m->batteria_scarica));
+        riga_energia(c, iw, "battery-charging", C_BATT, "In batteria", kwh(m->batteria_carica));
+    }
+    riga_energia(c, iw, "home", C_CASA, "Consumo di casa", kwh(m->casa));
+    if (m->autosufficienza >= 0) {
+        char t[64];
+        snprintf(t, sizeof(t), "Autosufficienza %.0f%%", m->autosufficienza);
+        mk_label(c, t, &lv_font_montserrat_14, C_TEXT2, iw);
+    }
+}
+
+// ---- le lancette: stessa cosa con un numero diverso ----
+static void fill_gauge(lv_obj_t *c, const cJSON *card, int w, int h, const char *titolo,
+                       double valore, bool disponibile, lv_color_t col, const char *sotto)
+{
+    const EnergyModel *m = energy_model_get();
+    if (!energia_testa(c, card, w, titolo, m, disponibile)) return;
+    if (valore < 0) {
+        mk_label(c, "Non calcolabile in questo periodo", &lv_font_montserrat_14, C_TEXT2, w - 24);
+        return;
+    }
+
+    lv_obj_t *arco = lv_arc_create(c);
+    int d = LV_MIN(w - 40, (h > 0 ? h : 200) - 90);
+    if (d < 90) d = 90;
+    lv_obj_set_size(arco, d, d);
+    lv_arc_set_rotation(arco, 135);
+    lv_arc_set_bg_angles(arco, 0, 270);
+    lv_arc_set_range(arco, 0, 100);
+    lv_arc_set_value(arco, (int)(valore + 0.5));
+    lv_obj_remove_style(arco, NULL, LV_PART_KNOB);
+    lv_obj_clear_flag(arco, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_arc_width(arco, 12, LV_PART_MAIN);
+    lv_obj_set_style_arc_width(arco, 12, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_color(arco, C_ARCO_BG, LV_PART_MAIN);
+    lv_obj_set_style_arc_color(arco, col, LV_PART_INDICATOR);
+    lv_obj_set_style_bg_opa(arco, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(arco, 0, 0);
+
+    char t[32];
+    snprintf(t, sizeof(t), "%.0f%%", valore);
+    lv_obj_t *l = mk_label(arco, t, &lv_font_montserrat_24, C_TEXT, d - 24);
+    lv_obj_center(l);
+    if (sotto) mk_label(c, sotto, &lv_font_montserrat_14, C_TEXT2, w - 24);
+}
+
+// ---- la tabella dei numeri ----
+static void fill_table(lv_obj_t *c, const cJSON *card, int w, int h)
+{
+    const EnergyModel *m = energy_model_get();
+    if (!energia_testa(c, card, w, "Sorgenti", m,
+                       m->c_e_rete || m->c_e_solare || m->c_e_batteria ||
+                       m->c_e_gas || m->c_e_acqua)) return;
+    int iw = w - 24;
+    if (m->c_e_solare) riga_energia(c, iw, "solar-power", C_SOLE, "Prodotto", kwh(m->solare));
+    if (m->c_e_rete) {
+        riga_energia(c, iw, "flash", C_RETE, "Preso dalla rete", kwh(m->rete_presa));
+        riga_energia(c, iw, "flash-off", C_IMMESSO, "Immesso in rete", kwh(m->rete_immessa));
+    }
+    if (m->c_e_batteria) {
+        riga_energia(c, iw, "battery-charging", C_BATT, "Caricata", kwh(m->batteria_carica));
+        riga_energia(c, iw, "battery", C_BATT, "Scaricata", kwh(m->batteria_scarica));
+    }
+    if (m->c_e_gas)   riga_energia(c, iw, "fire", C_GASC, "Gas", kwh(m->gas, m->unita_gas.c_str()));
+    if (m->c_e_acqua) riga_energia(c, iw, "water", C_ACQUA, "Acqua", kwh(m->acqua, m->unita_acqua.c_str()));
+    riga_energia(c, iw, "home", C_CASA, "Totale casa", kwh(m->casa));
+    if (m->c_e_costo) {
+        char t[72];
+        snprintf(t, sizeof(t), "Spesa %.2f   Ricavo %.2f", m->costo, m->compenso);
+        mk_label(c, t, &lv_font_montserrat_14, C_TEXT2, iw);
+    }
+}
+
+// ---- i dispositivi che consumano di piu' ----
+static void fill_devices(lv_obj_t *c, const cJSON *card, int w, int h)
+{
+    const EnergyModel *m = energy_model_get();
+    if (!energia_testa(c, card, w, "Dispositivi", m, m->c_e_dispositivi)) return;
+
+    std::vector<const EnergyVoce *> v;
+    for (const EnergyVoce &d : m->dispositivi) if (d.totale > 0) v.push_back(&d);
+    std::sort(v.begin(), v.end(),
+              [](const EnergyVoce *a, const EnergyVoce *b) { return a->totale > b->totale; });
+    if (v.empty()) {
+        mk_label(c, "Nessun consumo nel periodo", &lv_font_montserrat_14, C_TEXT2, w - 24);
+        return;
+    }
+    /* Su un pannello si leggono i primi, non tutti: oltre una certa lunghezza
+       diventa una lista della spesa che nessuno guarda. */
+    size_t quanti = v.size() < 8 ? v.size() : 8;
+    for (size_t i = 0; i < quanti; i++)
+        riga_energia(c, w - 24, "power-plug", C_ON, sanitize(v[i]->nome.c_str()).c_str(),
+                     kwh(v[i]->totale));
+}
+
+// ---- i grafici a barre ----
+static void fill_barre(lv_obj_t *c, const cJSON *card, int w, int h, const char *titolo,
+                       bool disponibile, const std::vector<float> *s1, lv_color_t c1,
+                       const std::vector<float> *s2, lv_color_t c2)
+{
+    const EnergyModel *m = energy_model_get();
+    if (!energia_testa(c, card, w, titolo, m, disponibile)) return;
+    if (m->npunti <= 0) return;
+
+    lv_obj_t *ch = lv_chart_create(c);
+    int alt = (h > 0 ? h : 3 * ROW_H + 2 * GAP) - 80;
+    if (alt < 90) alt = 90;
+    lv_obj_set_size(ch, w - 30, alt);
+    lv_chart_set_type(ch, LV_CHART_TYPE_BAR);
+    lv_chart_set_point_count(ch, m->npunti);
+    lv_chart_set_div_line_count(ch, 4, 0);
+    lv_obj_set_style_bg_opa(ch, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(ch, 0, 0);
+    lv_obj_set_style_line_color(ch, C_ARCO_BG, LV_PART_MAIN);
+    lv_obj_set_style_size(ch, 0, LV_PART_INDICATOR);
+
+    float mx = 0;
+    if (s1) for (float x : *s1) if (x > mx) mx = x;
+    if (s2) for (float x : *s2) if (x > mx) mx = x;
+    if (mx <= 0) mx = 1;
+    lv_chart_set_range(ch, LV_CHART_AXIS_PRIMARY_Y, 0, (lv_coord_t)(mx * 1.1f + 1));
+
+    for (int pass = 0; pass < 2; pass++) {
+        const std::vector<float> *sv = pass ? s2 : s1;
+        if (!sv) continue;
+        lv_chart_series_t *ser = lv_chart_add_series(ch, pass ? c2 : c1, LV_CHART_AXIS_PRIMARY_Y);
+        for (int i = 0; i < m->npunti; i++)
+            lv_chart_set_next_value(ch, ser, (lv_coord_t)(i < (int)sv->size() ? (*sv)[i] : 0));
+    }
+
+    char sotto[80];
+    snprintf(sotto, sizeof(sotto), "%s - %d fasce", energy_periodo_nome(m->periodo), m->npunti);
+    mk_label(c, sotto, &lv_font_montserrat_14, C_TEXT2, w - 24);
+}
+
+// ---- i pulsanti del periodo: l'unica card che comanda, e comanda tutte ----
+static void periodo_cb(lv_event_t *e)
+{
+    EnergyPeriodo p = (EnergyPeriodo)(intptr_t)lv_event_get_user_data(e);
+    energy_model_set_periodo(p);
+}
+
+static void fill_date(lv_obj_t *c, const cJSON *card, int w, int h)
+{
+    const EnergyModel *m = energy_model_get();
+    lv_obj_set_flex_flow(c, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(c, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    for (int i = 0; i <= (int)EN_ANNO; i++) {
+        EnergyPeriodo p = (EnergyPeriodo)i;
+        bool scelto = (p == m->periodo);
+        lv_obj_t *b = lv_btn_create(c);
+        lv_obj_set_height(b, 40);
+        lv_obj_set_flex_grow(b, 1);
+        lv_obj_set_style_bg_color(b, scelto ? C_ON : lv_color_hex(0x2b2d31), 0);
+        lv_obj_set_style_border_width(b, 0, 0);
+        lv_obj_set_style_shadow_width(b, 0, 0);
+        lv_obj_add_event_cb(b, periodo_cb, LV_EVENT_CLICKED, (void *)(intptr_t)p);
+        lv_obj_t *l = lv_label_create(b);
+        lv_label_set_text(l, energy_periodo_nome(p));
+        lv_obj_set_style_text_font(l, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_color(l, scelto ? lv_color_hex(0xffffff) : C_TEXT2, 0);
+        lv_obj_center(l);
+    }
+}
+
+/* Riempie una card gia' creata. Chiamata alla costruzione e a ogni numero
+   nuovo. */
+static void fill_energy_card(lv_obj_t *c, const cJSON *card, const std::string &t, int w, int h)
+{
+    const EnergyModel *m = energy_model_get();
+
+    if (t == "energy-date-selection")          { fill_date(c, card, w, h); return; }
+    if (t == "energy-distribution")            { fill_distribution(c, card, w, h); return; }
+    if (t == "energy-sources-table")           { fill_table(c, card, w, h); return; }
+    if (t == "energy-devices-graph" ||
+        t == "energy-devices-detail-graph")    { fill_devices(c, card, w, h); return; }
+
+    if (t == "energy-self-sufficiency-gauge") {
+        fill_gauge(c, card, w, h, "Autosufficienza", m->autosufficienza,
+                   m->c_e_rete || m->c_e_solare, C_SOLE,
+                   "Consumi non comprati dalla rete");
+        return;
+    }
+    if (t == "energy-solar-consumed-gauge") {
+        fill_gauge(c, card, w, h, "Sole usato in casa", m->solare_usato,
+                   m->c_e_solare, C_SOLE, "Prodotto rimasto in casa");
+        return;
+    }
+    if (t == "energy-grid-neutrality-gauge" || t == "energy-grid-balance") {
+        fill_gauge(c, card, w, h, "Bilancio con la rete", m->neutralita,
+                   m->c_e_rete, C_IMMESSO, "Immesso sul totale scambiato");
+        return;
+    }
+    if (t == "energy-carbon-consumed-gauge") {
+        /* Vorrebbe l'integrazione CO2 Signal, che il pannello non interroga.
+           Meglio dirlo che disegnare una lancetta inventata. */
+        energia_testa(c, card, w, "Energia a basse emissioni", m, false);
+        return;
+    }
+
+    if (t == "energy-usage-graph") {
+        fill_barre(c, card, w, h, "Consumo", m->c_e_rete || m->c_e_solare,
+                   &m->g_rete_presa, C_RETE, m->c_e_solare ? &m->g_solare : NULL, C_SOLE);
+        return;
+    }
+    if (t == "energy-solar-graph") {
+        fill_barre(c, card, w, h, "Fotovoltaico", m->c_e_solare, &m->g_solare, C_SOLE, NULL, C_SOLE);
+        return;
+    }
+    if (t == "energy-gas-graph") {
+        fill_barre(c, card, w, h, "Gas", m->c_e_gas, &m->g_gas, C_GASC, NULL, C_GASC);
+        return;
+    }
+    if (t == "energy-water-graph") {
+        fill_barre(c, card, w, h, "Acqua", m->c_e_acqua, &m->g_acqua, C_ACQUA, NULL, C_ACQUA);
+        return;
+    }
+
+    /* energy-sankey, energy-compare e i tipi che HA aggiungera': il diagramma
+       a flussi non sta in una card di un pannello da 10 pollici e il confronto
+       fra due periodi vuole due raccolte. Si mostra la tabella, che dice le
+       stesse cose in numeri invece che in disegno. */
+    fill_table(c, card, w, h);
+}
+
+/* Scorre la vista in cerca di card dell'energia, comprese quelle annidate
+   dentro stack, griglie e sezioni. Finche' non ce n'e' nemmeno una, il modello
+   non chiede niente a Home Assistant: un pannello che non mostra l'energia non
+   ha motivo di scaricarne i dati. */
+static bool cerca_energia(const cJSON *n)
+{
+    if (!n) return false;
+    if (cJSON_IsObject(n)) {
+        const cJSON *t = cJSON_GetObjectItem(n, "type");
+        if (cJSON_IsString(t) && is_energy_card(t->valuestring)) return true;
+    }
+    const cJSON *f;
+    cJSON_ArrayForEach(f, n)
+        if ((cJSON_IsObject(f) || cJSON_IsArray(f)) && cerca_energia(f)) return true;
+    return false;
+}
+
+/* Crea il contenitore e lo iscrive al registro. */
+static void render_energy_card(lv_obj_t *parent, const cJSON *card,
+                               const std::string &t, int w, int h)
+{
+    int alt = h > 0 ? h : (t == "energy-date-selection" ? ROW_H : 3 * ROW_H + 2 * GAP);
+    lv_obj_t *c = mk_card(parent, w, alt);
+    lv_obj_set_flex_flow(c, LV_FLEX_FLOW_COLUMN);
+    s_encards.push_back({c, card, t, w, alt});
+    fill_energy_card(c, card, t, w, alt);
+}
+
+/* Arrivano numeri nuovi: ogni card si rifa' dentro il suo contenitore, che
+   resta dov'era. Chiamata dal filo del modello, che ha gia' il lock. */
+static void energia_aggiorna(void)
+{
+    bsp_display_lock(0);
+    for (EnCard &e : s_encards) {
+        if (!e.box) continue;
+        lv_obj_clean(e.box);
+        fill_energy_card(e.box, e.card, e.tipo, e.w, e.h);
+    }
+    bsp_display_unlock();
+}
 
 static void render_placeholder(lv_obj_t *parent, const cJSON *card, int w, int h)
 {
     std::string t = card_type(card);
     const char *fase = "non ancora supportata";
-    if (t.rfind("energy-", 0) == 0)                      fase = "arriva con la fase 4";
 
     lv_obj_t *c = mk_card(parent, w, h > 0 ? h : 2 * ROW_H + GAP);
     lv_obj_set_style_bg_color(c, lv_color_hex(0x2b2d31), 0);
@@ -1085,7 +1488,7 @@ static const uint32_t SERIES_COLORS[] = {
     0x44739e, 0x984ea3, 0x00d2d5, 0xff7f00, 0xaf8d00, 0x7f80cd, 0xb3e900, 0xc42e60,
 };
 
-enum ChartKind { CK_STATS, CK_HISTORY };
+enum ChartKind { CK_STATS, CK_HISTORY, CK_NUMERO };   // CK_NUMERO = card "statistic"
 
 struct ChartSeriesSpec { std::string eid, name; };
 
@@ -1096,6 +1499,10 @@ struct ChartSpec {
     std::string title, unit;
     std::vector<std::string> stat_types;      // richiesti a HA, in ordine di preferenza
     bool bar = false, legend = true;
+    /* Solo per CK_NUMERO: la finestra di calendario che la card chiede.
+       0 = nessuna (allora vale span_s), 1 giorno, 2 settimana, 3 mese, 4 anno.
+       "arretra" e' quanti periodi indietro: -1 vuol dire "quello prima". */
+    int cal = 0, arretra = 0;
     std::string period;                       // "5minute", "hour", "day", ...
     int period_s = 300;
     int64_t span_s = 86400;
@@ -1130,6 +1537,16 @@ struct ChartUI {
 static std::vector<ChartSpec> s_cspec;
 static std::vector<ChartData> s_cdata;
 static std::vector<ChartUI>   s_cui;
+
+/* La card "statistic" non disegna un grafico ma un numero, quindi non entra
+   in s_cui: ha un registro suo, aggiornato dagli stessi dati. */
+struct NumeroUI {
+    int idx = -1;
+    lv_obj_t *valore = NULL;
+    lv_obj_t *sotto  = NULL;
+    std::string unita;
+};
+static std::vector<NumeroUI> s_num;
 static uint32_t s_cgen = 0;              // cambia a ogni nuova configurazione
 static TaskHandle_t s_fetch_task = NULL;
 
@@ -1154,7 +1571,7 @@ static const char *coarser_period(const std::string &p)
 static bool chart_card(const cJSON *card)
 {
     std::string t = card_type(card);
-    return t == "statistics-graph" || t == "history-graph";
+    return t == "statistics-graph" || t == "history-graph" || t == "statistic";
 }
 
 static ChartSpec make_chart_spec(const cJSON *card)
@@ -1162,7 +1579,7 @@ static ChartSpec make_chart_spec(const cJSON *card)
     ChartSpec cs;
     cs.node = card;
     std::string t = card_type(card);
-    cs.kind = t == "history-graph" ? CK_HISTORY : CK_STATS;
+    cs.kind = t == "history-graph" ? CK_HISTORY : t == "statistic" ? CK_NUMERO : CK_STATS;
     const char *title = jstr(card, "title");
     if (title) cs.title = sanitize(title);
     const char *unit = jstr(card, "unit");
@@ -1208,6 +1625,46 @@ static ChartSpec make_chart_spec(const cJSON *card)
     cJSON_ArrayForEach(st, cJSON_GetObjectItem(card, "stat_types"))
         if (cJSON_IsString(st)) cs.stat_types.push_back(st->valuestring);
     if (cs.stat_types.empty()) cs.stat_types = {"mean", "state"};
+
+    /* La card "statistic" e' un caso a se': un solo numero, e la finestra la
+       scrive in un modo tutto suo. Le tre forme che usa Home Assistant:
+
+         period: {calendar: {period: month, offset: -1}}   il mese scorso
+         period: {rolling_window: {duration: {hours: 24}}}  le ultime 24 ore
+         period: {fixed_period: {start: ..., end: ...}}     due date precise
+
+       Le prime due si servono; della terza si prende la durata e si tratta
+       come una finestra che finisce adesso, che e' il meglio che si puo' fare
+       senza portarsi dietro un calendario completo. */
+    if (cs.kind == CK_NUMERO) {
+        cs.ents.clear();
+        const char *id = jstr(card, "entity");
+        if (id) cs.ents.push_back({id, ""});
+        const char *tipo = jstr(card, "stat_type");
+        cs.stat_types.clear();
+        cs.stat_types.push_back(tipo ? tipo : "change");
+        cs.npts = 1;
+
+        const cJSON *per = cJSON_GetObjectItem(card, "period");
+        const cJSON *calendario = cJSON_GetObjectItem(per, "calendar");
+        const cJSON *rotolo    = cJSON_GetObjectItem(per, "rolling_window");
+        if (cJSON_IsObject(calendario)) {
+            const char *q = jstr(calendario, "period");
+            cs.cal = !q ? 1 : !strcmp(q, "week") ? 2 : !strcmp(q, "month") ? 3
+                            : !strcmp(q, "year") ? 4 : 1;
+            cs.arretra = (int)jnum(calendario, "offset", 0);
+            cs.period  = cs.cal == 1 ? "day" : cs.cal == 2 ? "week"
+                       : cs.cal == 3 ? "month" : "month";
+        } else {
+            const cJSON *d = cJSON_GetObjectItem(rotolo, "duration");
+            double ore = jnum(d, "hours", 0) + jnum(d, "days", 0) * 24;
+            cs.span_s = (int64_t)(ore > 0 ? ore * 3600 : 86400);
+            cs.period = cs.span_s <= 86400 ? "hour" : "day";
+            cs.cal = 0;
+        }
+        cs.period_s = period_seconds(cs.period);
+        if (cs.cal) cs.span_s = cs.period_s;
+    }
     return cs;
 }
 
@@ -1415,6 +1872,40 @@ static void chart_apply(size_t ui_i)
     else                     lv_label_set_text(u.status, "");
 }
 
+static void numero_apply(NumeroUI &u);       // definita con gli altri aggiornamenti
+
+static void render_statistic(lv_obj_t *parent, const cJSON *card, int w, int h)
+{
+    int idx = -1;
+    for (size_t i = 0; i < s_cspec.size(); i++) if (s_cspec[i].node == card) { idx = (int)i; break; }
+    if (idx < 0 || s_cspec[idx].ents.empty()) { render_placeholder(parent, card, w, h); return; }
+
+    lv_obj_t *c = mk_card(parent, w, h > 0 ? h : 2 * ROW_H + GAP);
+    lv_obj_set_style_pad_all(c, 14, 0);
+    lv_obj_set_flex_flow(c, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(c, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+
+    const char *nm = jstr(card, "name");
+    lv_obj_t *ln = mk_label(c, "", &lv_font_montserrat_16, C_TEXT2, w - 28);
+    bind(s_cspec[idx].ents[0].eid.c_str(), B_NAME, ln, NULL, NULL, NULL,
+         nm ? sanitize(nm) : "");
+
+    NumeroUI u;
+    u.idx = idx;
+    u.valore = mk_label(c, "...", &lv_font_montserrat_32, C_TEXT, w - 28);
+    u.sotto  = mk_label(c, "", &lv_font_montserrat_14, C_TEXT2, w - 28);
+    const char *un = jstr(card, "unit");
+    if (un) u.unita = sanitize(un);
+    else {
+        /* Senza unita' scritta nella card si prende quella dell'entita': e'
+           quello che fa anche Home Assistant. */
+        auto it = s_ent.find(s_cspec[idx].ents[0].eid);
+        if (it != s_ent.end()) u.unita = it->second.unit;
+    }
+    s_num.push_back(u);
+    numero_apply(s_num.back());
+}
+
 static void render_chart(lv_obj_t *parent, const cJSON *card, int w, int h)
 {
     int idx = -1;
@@ -1548,8 +2039,60 @@ static volatile bool    s_fetch_busy = false;
 static volatile int64_t s_fetch_since = 0;
 
 // Ricalcola la griglia: slot k = [t0 + k*periodo, t0 + (k+1)*periodo).
+/* Mezzanotte locale del giorno che contiene t. */
+static int64_t mezzanotte_di(int64_t t)
+{
+    time_t tt = (time_t)t;
+    struct tm tm;
+    localtime_r(&tt, &tm);
+    tm.tm_hour = tm.tm_min = tm.tm_sec = 0;
+    tm.tm_isdst = -1;
+    time_t m = mktime(&tm);
+    return m == (time_t)-1 ? t : (int64_t)m;
+}
+
+/* L'inizio del giorno, della settimana, del mese o dell'anno in corso,
+   eventualmente arretrato di qualche periodo. Sul calendario vero, non a
+   multipli di 86400: "questo mese" comincia il primo del mese anche quando il
+   mese scorso aveva 28 giorni. */
+static void calendario_bounds(int cal, int arretra, int64_t *t0, int64_t *t1)
+{
+    int64_t oggi = mezzanotte_di(now_s());
+    time_t tt = (time_t)oggi;
+    struct tm tm;
+    localtime_r(&tt, &tm);
+
+    if (cal == 1) {                                   // giorno
+        *t0 = oggi + (int64_t)arretra * 86400;
+        *t1 = *t0 + 86400;
+        return;
+    }
+    if (cal == 2) {                                   // settimana, da lunedi'
+        int dow = (tm.tm_wday + 6) % 7;
+        *t0 = oggi - (int64_t)dow * 86400 + (int64_t)arretra * 7 * 86400;
+        *t1 = *t0 + 7 * 86400;
+        return;
+    }
+    struct tm a = tm;
+    a.tm_mday = 1;
+    a.tm_hour = a.tm_min = a.tm_sec = 0;
+    if (cal == 4) a.tm_mon = 0;
+    a.tm_isdst = -1;
+    struct tm b = a;
+    if (cal == 3) { a.tm_mon += arretra; b.tm_mon = a.tm_mon + 1; }
+    else          { a.tm_year += arretra; b.tm_year = a.tm_year + 1; b.tm_mon = 0; }
+    b.tm_isdst = -1;
+    *t0 = (int64_t)mktime(&a);
+    *t1 = (int64_t)mktime(&b);
+}
+
 static void grid_bounds(const ChartSpec &cs, int64_t *t0)
 {
+    if (cs.kind == CK_NUMERO && cs.cal) {
+        int64_t t1;
+        calendario_bounds(cs.cal, cs.arretra, t0, &t1);
+        return;
+    }
     int64_t now = now_s();
     /* Finestre di giorni interi: il grafico copre il giorno di calendario
        (dalle 00:00 alle 23:59 locali), non le ultime 24 ore che scorrono
@@ -1578,24 +2121,99 @@ static void fetch_done(void)
     if (s_fetch_task) xTaskNotifyGive(s_fetch_task);
 }
 
+/* Il numero della card "statistic". Un solo valore, quello della sola fascia
+   che abbiamo chiesto. */
+static void numero_apply(NumeroUI &u)
+{
+    if (u.idx < 0 || u.idx >= (int)s_cdata.size()) return;
+    const ChartSpec &cs = s_cspec[u.idx];
+    const ChartData &cd = s_cdata[u.idx];
+
+    if (cd.fetched_s == 0) {
+        lv_label_set_text(u.valore, cd.err.empty() ? "..." : "--");
+        if (u.sotto && !cd.err.empty()) lv_label_set_text(u.sotto, cd.err.c_str());
+        return;
+    }
+    float v = NAN;
+    if (!cd.s.empty() && cd.s[0].has_data && !cd.s[0].v.empty()) v = cd.s[0].v[0];
+
+    char b[48];
+    if (std::isnan(v)) {
+        /* Nessun dato non e' zero: un contatore che segna 0 e uno che non ha
+           ancora niente da dire sono due cose diverse, e mostrarle uguali
+           farebbe credere a un consumo nullo. */
+        snprintf(b, sizeof(b), "--");
+    } else {
+        double a = fabs(v);
+        if (a < 10)       snprintf(b, sizeof(b), "%.2f", v);
+        else if (a < 100) snprintf(b, sizeof(b), "%.1f", v);
+        else              snprintf(b, sizeof(b), "%.0f", v);
+    }
+    std::string t = b;
+    if (!std::isnan(v) && !u.unita.empty()) t += " " + u.unita;
+    lv_label_set_text(u.valore, t.c_str());
+    if (u.sotto) {
+        const char *q = cs.stat_types.empty() ? "" : cs.stat_types[0].c_str();
+        const char *nome = !strcmp(q, "change") ? "variazione" : !strcmp(q, "mean") ? "media"
+                         : !strcmp(q, "min") ? "minimo" : !strcmp(q, "max") ? "massimo"
+                         : !strcmp(q, "sum") ? "totale" : q;
+        const char *quando = cs.cal == 1 ? "oggi" : cs.cal == 2 ? "questa settimana"
+                           : cs.cal == 3 ? "questo mese" : cs.cal == 4 ? "quest'anno" : "";
+        char sotto[80];
+        if (cs.cal && cs.arretra) snprintf(sotto, sizeof(sotto), "%s, periodo precedente", nome);
+        else                      snprintf(sotto, sizeof(sotto), "%s %s", nome, quando);
+        lv_label_set_text(u.sotto, sotto);
+    }
+}
+
 static void apply_to_ui(int idx)
 {
     for (size_t i = 0; i < s_cui.size(); i++) if (s_cui[i].idx == idx) chart_apply(i);
+    for (NumeroUI &u : s_num) if (u.idx == idx) numero_apply(u);
 }
 
+/* I dati dei grafici si masticano FUORI dal lock del display.
+
+   Prima questa funzione prendeva bsp_display_lock() all'inizio e lo restituiva
+   alla fine: in mezzo ci stava tutta la lettura del JSON, serie per serie e
+   riga per riga. Finche' quel lock e' preso LVGL non puo' disegnare, quindi il
+   pannello si impuntava esattamente quando arrivavano i dati - e tanto piu' a
+   lungo quanti piu' dati erano.
+
+   Adesso il lock si prende due volte e per un attimo: la prima per copiarsi
+   cio' che serve, la seconda per consegnare il risultato. In mezzo il display
+   e' libero.
+
+   Fra le due prese la vista puo' essere stata ricostruita. Per questo la
+   generazione si ricontrolla anche alla consegna: se e' cambiata, questi dati
+   riguardano una vista che non esiste piu' e si buttano. Due richieste non si
+   sovrappongono mai (ci pensa s_fetch_busy), quindi nessun altro puo' aver
+   scritto la stessa casella nel frattempo. */
 static void on_stats_result(bool ok, cJSON *result, const char *error, void *ctx)
 {
     FetchJob *job = (FetchJob *)ctx;
+
+    // --- 1. copia di lavoro, col lock preso il minimo indispensabile ------
+    ChartSpec cs;
+    std::vector<ChartSeriesData> vecchie;
+    bool valido = false;
     bsp_display_lock(0);
     if (job->gen == s_cgen && job->idx < (int)s_cdata.size()) {
-        const ChartSpec &cs = s_cspec[job->idx];
-        ChartData &cd = s_cdata[job->idx];
-        if (!ok) {
-            cd.err = std::string("Errore dati: ") + (error ? error : "?");
-            cd.retry_at = now_s() + 60;
-            ESP_LOGW(TAG, "grafico %d: %s", job->idx, cd.err.c_str());
-        } else {
-            ChartData nd;
+        cs = s_cspec[job->idx];
+        vecchie = s_cdata[job->idx].s;
+        valido = true;
+    }
+    bsp_display_unlock();
+    if (!valido) { delete job; fetch_done(); return; }
+
+    // --- 2. il lavoro vero, con il display libero di disegnare ------------
+    ChartData nd;
+    std::string errore;
+    if (!ok) {
+        errore = std::string("Errore dati: ") + (error ? error : "?");
+        ESP_LOGW(TAG, "grafico %d: %s", job->idx, errore.c_str());
+    } else {
+        {
             nd.t0 = job->t0;
             nd.s.resize(cs.ents.size());
             for (size_t k = 0; k < cs.ents.size(); k++) {
@@ -1604,7 +2222,7 @@ static void on_stats_result(bool ok, cJSON *result, const char *error, void *ctx
                 if (!cJSON_IsArray(rows) || cJSON_GetArraySize(rows) == 0) {
                     if (cs.kind == CK_HISTORY) {
                         nd.need_history.push_back(cs.ents[k].eid);
-                        if (k < cd.s.size()) sd = cd.s[k];   // tengo i vecchi dati finche' arriva la storia
+                        if (k < vecchie.size()) sd = vecchie[k];   // tengo i vecchi dati finche' arriva la storia
                     }
                     continue;
                 }
@@ -1631,7 +2249,18 @@ static void on_stats_result(bool ok, cJSON *result, const char *error, void *ctx
                 sd.has_data = true;
             }
             nd.fetched_s = now_s();
-            cd = nd;
+        }
+    }
+
+    // --- 3. consegna ------------------------------------------------------
+    bsp_display_lock(0);
+    if (job->gen == s_cgen && job->idx < (int)s_cdata.size()) {
+        ChartData &cd = s_cdata[job->idx];
+        if (!ok) {
+            cd.err = errore;
+            cd.retry_at = now_s() + 60;
+        } else {
+            cd = std::move(nd);
             ESP_LOGI(TAG, "grafico %d: statistiche ricevute (%u senza statistiche)",
                      job->idx, (unsigned)cd.need_history.size());
         }
@@ -1642,55 +2271,95 @@ static void on_stats_result(bool ok, cJSON *result, const char *error, void *ctx
     fetch_done();
 }
 
+/* Come sopra: il lock si prende solo per prendere e per consegnare. Qui in
+   piu' si smette di copiare il testo di ogni riga di storia.
+
+   Prima ogni riga faceva nascere una std::string. Per una serie numerica -
+   cioe' quasi tutte - quelle stringhe servivano soltanto a essere riconvertite
+   in numero poche righe dopo, e poi venivano buttate: centinaia di allocazioni
+   nella RAM interna, che e' la poca, per niente. Adesso il numero si ricava
+   subito e del testo si tiene solo il puntatore dentro il JSON, che resta
+   valido per tutta la chiamata. Le stringhe vere si costruiscono solo per le
+   serie testuali, che sono quelle che devono davvero mostrarle. */
 static void on_history_result(bool ok, cJSON *result, const char *error, void *ctx)
 {
     FetchJob *job = (FetchJob *)ctx;
+
+    // --- 1. copia di lavoro ----------------------------------------------
+    ChartSpec cs;
+    std::vector<ChartSeriesData> serie;
+    bool valido = false;
     bsp_display_lock(0);
     if (job->gen == s_cgen && job->idx < (int)s_cdata.size()) {
-        const ChartSpec &cs = s_cspec[job->idx];
+        cs = s_cspec[job->idx];
+        serie = s_cdata[job->idx].s;
+        valido = true;
+    }
+    bsp_display_unlock();
+    if (!valido) { delete job; fetch_done(); return; }
+    /* La storia arriva sempre dopo le statistiche, che dimensionano le serie.
+       Ma costa una riga assicurarsene, invece di fidarsi dell'ordine. */
+    serie.resize(cs.ents.size());
+
+    // --- 2. il lavoro vero, con il display libero -------------------------
+    std::string errore;
+    if (!ok) {
+        errore = std::string("Errore storia: ") + (error ? error : "?");
+    } else {
+        struct Riga { int64_t t; const char *st; double num; };
+        std::vector<Riga> righe;
+        for (size_t k = 0; k < cs.ents.size(); k++) {
+            const cJSON *rows = cJSON_GetObjectItem(result, cs.ents[k].eid.c_str());
+            if (!cJSON_IsArray(rows) || cJSON_GetArraySize(rows) == 0) continue;
+            ChartSeriesData &sd = serie[k];
+            sd.timeline.clear();
+
+            righe.clear();
+            righe.reserve(cJSON_GetArraySize(rows));
+            bool numeric = true;
+            const cJSON *r;
+            cJSON_ArrayForEach(r, rows) {
+                const char *st = jstr(r, "s");
+                if (!st) continue;
+                const cJSON *tj = cJSON_GetObjectItem(r, "lu");
+                if (!tj) tj = cJSON_GetObjectItem(r, "lc");
+                double d;
+                bool num_ok = state_number(st, &d);
+                if (!num_ok && strcmp(st, "unavailable") && strcmp(st, "unknown"))
+                    numeric = false;
+                righe.push_back({json_time_s(tj), st, num_ok ? d : NAN});
+            }
+            sd.numeric = numeric;
+            if (numeric) {
+                // gradino: ogni slot prende l'ultimo valore noto a fine slot
+                sd.v.assign(cs.npts, NAN);
+                size_t j = 0;
+                double cur = NAN;
+                for (int p = 0; p < cs.npts; p++) {
+                    int64_t te = job->t0 + (int64_t)(p + 1) * cs.period_s;
+                    while (j < righe.size() && righe[j].t < te) { cur = righe[j].num; j++; }
+                    if (righe.empty() || righe[0].t >= te) continue;
+                    sd.v[p] = (float)cur;
+                }
+            } else {
+                // solo qui il testo si copia davvero: serve per mostrarlo
+                sd.timeline.reserve(righe.size());
+                for (const Riga &x : righe) sd.timeline.push_back({x.t, x.st});
+            }
+            sd.has_data = true;
+        }
+    }
+
+    // --- 3. consegna ------------------------------------------------------
+    bsp_display_lock(0);
+    if (job->gen == s_cgen && job->idx < (int)s_cdata.size()) {
         ChartData &cd = s_cdata[job->idx];
         cd.need_history.clear();
         if (!ok) {
-            cd.err = std::string("Errore storia: ") + (error ? error : "?");
+            cd.err = errore;
             cd.retry_at = now_s() + 60;
         } else {
-            for (size_t k = 0; k < cs.ents.size(); k++) {
-                const cJSON *rows = cJSON_GetObjectItem(result, cs.ents[k].eid.c_str());
-                if (!cJSON_IsArray(rows) || cJSON_GetArraySize(rows) == 0) continue;
-                ChartSeriesData &sd = cd.s[k];
-                sd.timeline.clear();
-                bool numeric = true;
-                const cJSON *r;
-                cJSON_ArrayForEach(r, rows) {
-                    const char *st = jstr(r, "s");
-                    if (!st) continue;
-                    const cJSON *tj = cJSON_GetObjectItem(r, "lu");
-                    if (!tj) tj = cJSON_GetObjectItem(r, "lc");
-                    sd.timeline.push_back({json_time_s(tj), st});
-                    double d;
-                    if (!state_number(st, &d) && strcmp(st, "unavailable") && strcmp(st, "unknown"))
-                        numeric = false;
-                }
-                sd.numeric = numeric;
-                if (numeric) {
-                    // gradino: ogni slot prende l'ultimo valore noto a fine slot
-                    sd.v.assign(cs.npts, NAN);
-                    size_t j = 0;
-                    double cur = NAN;
-                    for (int p = 0; p < cs.npts; p++) {
-                        int64_t te = job->t0 + (int64_t)(p + 1) * cs.period_s;
-                        while (j < sd.timeline.size() && sd.timeline[j].first < te) {
-                            double d;
-                            cur = state_number(sd.timeline[j].second, &d) ? d : NAN;
-                            j++;
-                        }
-                        if (sd.timeline.empty() || sd.timeline[0].first >= te) continue;
-                        sd.v[p] = (float)cur;
-                    }
-                    sd.timeline.clear();
-                }
-                sd.has_data = true;
-            }
+            cd.s = std::move(serie);
             ESP_LOGI(TAG, "grafico %d: storia ricevuta", job->idx);
         }
         apply_to_ui(job->idx);
@@ -1760,7 +2429,16 @@ static void fetch_task(void *arg)
         bsp_display_lock(0);
         FetchJob *job = next_job(body);
         bsp_display_unlock();
-        if (!job) continue;
+        if (!job) {
+            /* Niente grafici da aggiornare: e' il turno dell'energia. Passa da
+               qui e non da un filo suo apposta, perche' due richieste insieme
+               sono proprio la raffica che il collegamento SDIO verso il C6
+               regge peggio. L'energia manda la sua e si mette in attesa da
+               sola: qui non si aspetta nulla. */
+            std::string en;
+            energy_model_prossima_richiesta(en);
+            continue;
+        }
         s_fetch_busy = true;
         s_fetch_since = esp_timer_get_time();
         int id = ha_ws_request(body.c_str(), job->history ? on_history_result : on_stats_result, job);
@@ -2499,6 +3177,1269 @@ static void render_media(lv_obj_t *parent, const cJSON *card, int w, int h)
     bind(eid, B_MEDIA, c, NULL, ln, NULL, nm ? sanitize(nm) : "", (int)s_media.size() - 1);
 }
 
+// ------------------------------------------------------------------ orologio
+
+/* Card "clock": l'unica che non guarda ne' entita' ne' Home Assistant. */
+struct Orologio {
+    lv_obj_t   *l;
+    lv_timer_t *t;
+    bool        secondi;
+    bool        ore12;
+};
+static std::vector<Orologio *> s_orologi;
+
+static void orologio_scrivi(Orologio *o)
+{
+    time_t tt = time(NULL);
+    struct tm tm;
+    localtime_r(&tt, &tm);
+    char b[32];
+    if (o->ore12) {
+        int h = tm.tm_hour % 12; if (!h) h = 12;
+        if (o->secondi) snprintf(b, sizeof(b), "%d:%02d:%02d %s", h, tm.tm_min, tm.tm_sec,
+                                 tm.tm_hour < 12 ? "AM" : "PM");
+        else            snprintf(b, sizeof(b), "%d:%02d %s", h, tm.tm_min,
+                                 tm.tm_hour < 12 ? "AM" : "PM");
+    } else {
+        if (o->secondi) snprintf(b, sizeof(b), "%02d:%02d:%02d", tm.tm_hour, tm.tm_min, tm.tm_sec);
+        else            snprintf(b, sizeof(b), "%02d:%02d", tm.tm_hour, tm.tm_min);
+    }
+    lv_label_set_text(o->l, b);
+}
+
+static void orologio_tick(lv_timer_t *t) { orologio_scrivi((Orologio *)t->user_data); }
+
+static void render_clock(lv_obj_t *parent, const cJSON *card, int w, int h)
+{
+    lv_obj_t *c = mk_card(parent, w, h > 0 ? h : 2 * ROW_H + GAP);
+    lv_obj_set_style_pad_all(c, 14, 0);
+    lv_obj_set_flex_flow(c, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(c, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    const char *title = jstr(card, "title");
+    if (title) mk_label(c, sanitize(title), &lv_font_montserrat_16, C_TEXT2, w - 28);
+
+    const char *dim = jstr(card, "clock_size");
+    const lv_font_t *f = &lv_font_montserrat_32;
+    if (dim && !strcmp(dim, "small"))  f = &lv_font_montserrat_24;
+    if (dim && !strcmp(dim, "medium")) f = &lv_font_montserrat_32;
+    if (dim && !strcmp(dim, "large"))  f = &lv_font_montserrat_48;
+
+    Orologio *o = new Orologio();
+    o->l = mk_label(c, "--:--", f, C_TEXT, w - 28);
+    const cJSON *sec = cJSON_GetObjectItem(card, "show_seconds");
+    o->secondi = cJSON_IsTrue(sec);
+    const char *fmt = jstr(card, "time_format");
+    o->ore12 = fmt && !strcmp(fmt, "12");
+    /* Un secondo se li mostra, altrimenti mezzo minuto: svegliare il pannello
+       sessanta volte al minuto per cambiare una cifra che non cambia sarebbe
+       lavoro buttato. */
+    o->t = lv_timer_create(orologio_tick, o->secondi ? 1000 : 30000, o);
+    orologio_scrivi(o);
+    s_orologi.push_back(o);
+}
+
+// ------------------------------------------------------------------ alert
+
+/* Card "alert": un riquadro che si accende di colore quando l'entita' e'
+   attiva. Serve a farsi notare - porta aperta, allarme, perdita d'acqua - e
+   quindi a spento deve sparire nel fondo, non restare acceso a meta'. */
+static void alert_refresh(Bind &b)
+{
+    bool on = is_on(b.eid);
+    lv_color_t col = lv_color_hex(0xdb4437);
+    if (b.extra >= 0) col = lv_color_hex((uint32_t)b.extra);
+    lv_obj_set_style_bg_color(b.obj, on ? col : C_CARD, 0);
+    if (b.l_name) {
+        /* Il nome va scritto, non solo colorato: senza questa riga la card
+           mostrava lo stato accanto a uno spazio vuoto, e chi guarda non
+           sapeva di cosa gli si stesse parlando. */
+        lv_label_set_text(b.l_name, sanitize(display_name(b.eid, b.name_override).c_str()).c_str());
+        lv_obj_set_style_text_color(b.l_name, on ? lv_color_white() : C_TEXT2, 0);
+    }
+    if (b.l_state) {
+        lv_label_set_text(b.l_state, format_state(b.eid).c_str());
+        lv_obj_set_style_text_color(b.l_state, on ? lv_color_white() : C_TEXT, 0);
+    }
+    if (b.icon) lv_obj_set_style_text_color(lv_obj_get_child(b.icon, 0),
+                                            on ? lv_color_white() : C_ICON_OFF, 0);
+}
+
+/* I colori che HA scrive per nome. Quelli che non conosciamo diventano il
+   rosso predefinito: meglio un avviso del colore sbagliato che nessun avviso. */
+static uint32_t colore_ha(const char *n)
+{
+    if (!n) return 0xdb4437;
+    struct { const char *n; uint32_t c; } t[] = {
+        {"red",0xdb4437},{"pink",0xe91e63},{"purple",0x926bc7},{"deep-purple",0x6e41ab},
+        {"indigo",0x3f51b5},{"blue",0x2196f3},{"light-blue",0x03a9f4},{"cyan",0x00bcd4},
+        {"teal",0x009688},{"green",0x43a047},{"light-green",0x8bc34a},{"lime",0xcddc39},
+        {"yellow",0xffeb3b},{"amber",0xffc107},{"orange",0xff9800},{"deep-orange",0xff5722},
+        {"brown",0x795548},{"grey",0x9e9e9e},{"gray",0x9e9e9e},{"blue-grey",0x607d8b},
+        {"black",0x000000},{"white",0xffffff},
+    };
+    for (auto &x : t) if (!strcmp(n, x.n)) return x.c;
+    return 0xdb4437;
+}
+
+static void render_alert(lv_obj_t *parent, const cJSON *card, int w, int h)
+{
+    const char *eid = jstr(card, "entity");
+    if (!eid) { render_placeholder(parent, card, w, h); return; }
+    lv_obj_t *c = mk_card(parent, w, h > 0 ? h : ROW_H);
+    lv_obj_set_style_pad_all(c, 12, 0);
+    lv_obj_set_flex_flow(c, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(c, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(c, 10, 0);
+
+    lv_obj_t *icon = mk_icon(c, 30);
+    lv_obj_set_style_bg_opa(icon, LV_OPA_TRANSP, 0);
+    lv_label_set_text(lv_obj_get_child(icon, 0), icon_symbol(eid).c_str());
+
+    lv_obj_t *ln = mk_label(c, "", &lv_font_montserrat_16, C_TEXT2, (w - 70) / 2);
+    lv_obj_set_flex_grow(ln, 1);
+    lv_obj_t *ls = mk_label(c, "", &lv_font_montserrat_16, C_TEXT, (w - 70) / 2);
+    lv_obj_set_style_text_align(ls, LV_TEXT_ALIGN_RIGHT, 0);
+
+    const char *nm = jstr(card, "name");
+    Bind b; b.eid = eid; b.kind = B_ALERT; b.obj = c; b.icon = icon;
+    b.l_name = ln; b.l_state = ls;
+    b.name_override = nm ? sanitize(nm) : "";
+    const char *col = jstr(card, "color");
+    b.extra = (col && strcmp(col, "none")) ? (int)colore_ha(col) : (int)0xdb4437;
+    s_binds.push_back(b);
+    refresh(s_binds.back());
+    attach_action(c, eid, card, LV_EVENT_CLICKED);
+}
+
+// ------------------------------------------------------------------ toggle-group
+
+/* Card "toggle-group": un solo tasto per un gruppo di entita'. Mostra quante
+   sono accese e le comanda tutte insieme con un messaggio solo. */
+struct Gruppo {
+    std::vector<std::string> eid;
+    std::string dominio;
+    lv_obj_t *l_conteggio;
+    lv_obj_t *icona;
+    uint32_t colore;
+};
+static std::vector<Gruppo *> s_gruppi;
+
+static void gruppo_refresh(Gruppo *g)
+{
+    int accese = 0;
+    for (const std::string &e : g->eid) if (is_on(e)) accese++;
+    char b[48];
+    if (accese == 0)                       snprintf(b, sizeof(b), "Tutte spente");
+    else if (accese == (int)g->eid.size()) snprintf(b, sizeof(b), "Tutte accese");
+    else                                   snprintf(b, sizeof(b), "%d di %u accese",
+                                                    accese, (unsigned)g->eid.size());
+    lv_label_set_text(g->l_conteggio, b);
+    lv_obj_set_style_bg_color(g->icona, accese ? lv_color_hex(g->colore) : C_ICON_OFF, 0);
+}
+
+static void gruppo_cb(lv_event_t *e)
+{
+    Gruppo *g = (Gruppo *)lv_event_get_user_data(e);
+    if (!g || g->eid.empty()) return;
+    /* Se ne e' accesa almeno una si spegne tutto, altrimenti si accende tutto:
+       e' il comportamento di HA, e soprattutto e' prevedibile - due tocchi
+       riportano sempre allo stesso punto. */
+    bool qualcuna = false;
+    for (const std::string &x : g->eid) if (is_on(x)) { qualcuna = true; break; }
+    std::string lista;
+    for (const std::string &x : g->eid) lista += (lista.empty() ? "\"" : ",\"") + x + "\"";
+    ha_ws_call_service_many(g->dominio.c_str(), qualcuna ? "turn_off" : "turn_on", lista.c_str());
+}
+
+static void render_toggle_group(lv_obj_t *parent, const cJSON *card, int w, int h)
+{
+    Gruppo *g = new Gruppo();
+    const cJSON *row;
+    cJSON_ArrayForEach(row, cJSON_GetObjectItem(card, "entities")) {
+        const char *e = cJSON_IsString(row) ? row->valuestring : jstr(row, "entity");
+        if (e) g->eid.push_back(e);
+    }
+    if (g->eid.empty()) { delete g; render_placeholder(parent, card, w, h); return; }
+    g->dominio = domain_of(g->eid[0]);
+    const char *col = jstr(card, "color");
+    g->colore = (col && strcmp(col, "none")) ? colore_ha(col) : 0x03a9f4;
+
+    lv_obj_t *c = mk_card(parent, w, h > 0 ? h : 2 * ROW_H + GAP);
+    lv_obj_set_style_pad_all(c, 14, 0);
+    lv_obj_set_flex_flow(c, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(c, 6, 0);
+
+    g->icona = mk_icon(c, 44);
+    lv_label_set_text(lv_obj_get_child(g->icona, 0), icon_symbol(g->eid[0]).c_str());
+
+    const char *title = jstr(card, "title");
+    mk_label(c, sanitize(title ? title : "Gruppo"), &lv_font_montserrat_16, C_TEXT, w - 28);
+    g->l_conteggio = mk_label(c, "", &lv_font_montserrat_16, C_TEXT2, w - 28);
+
+    lv_obj_add_flag(c, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(c, gruppo_cb, LV_EVENT_CLICKED, g);
+    s_gruppi.push_back(g);
+    gruppo_refresh(g);
+}
+
+// ------------------------------------------------------------------ humidifier
+
+struct Umid { lv_obj_t *ora, *set, *modo, *sw; };
+std::vector<Umid *> s_umid;
+
+static void umid_refresh(Umid *u, const std::string &eid)
+{
+    const Entity &e = ent(eid);
+    char b[48];
+    if (std::isfinite(e.umidita_ora)) snprintf(b, sizeof(b), "%.0f%%", e.umidita_ora);
+    else                         snprintf(b, sizeof(b), "--");
+    lv_label_set_text(u->ora, b);
+    if (std::isfinite(e.umidita_set)) snprintf(b, sizeof(b), "obiettivo %.0f%%", e.umidita_set);
+    else                         snprintf(b, sizeof(b), "");
+    lv_label_set_text(u->set, b);
+    lv_label_set_text(u->modo, sanitize(e.modo.c_str()).c_str());
+    if (is_on(eid)) lv_obj_add_state(u->sw, LV_STATE_CHECKED);
+    else            lv_obj_clear_state(u->sw, LV_STATE_CHECKED);
+}
+
+static void render_humidifier(lv_obj_t *parent, const cJSON *card, int w, int h)
+{
+    const char *eid = jstr(card, "entity");
+    if (!eid) { render_placeholder(parent, card, w, h); return; }
+    lv_obj_t *c = mk_card(parent, w, h > 0 ? h : 3 * ROW_H + 2 * GAP);
+    lv_obj_set_style_pad_all(c, 14, 0);
+    lv_obj_set_flex_flow(c, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(c, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(c, 4, 0);
+
+    const char *nm = jstr(card, "name");
+    lv_obj_t *ln = mk_label(c, "", &lv_font_montserrat_16, C_TEXT2, w - 28);
+    bind(eid, B_NAME, ln, NULL, NULL, NULL, nm ? sanitize(nm) : "");
+
+    Umid *u = new Umid();
+    u->ora  = mk_label(c, "--", &lv_font_montserrat_48, C_TEXT, w - 28);
+    u->set  = mk_label(c, "", &lv_font_montserrat_16, C_TEXT2, w - 28);
+    u->modo = mk_label(c, "", &lv_font_montserrat_14, C_TEXT2, w - 28);
+    u->sw   = lv_switch_create(c);
+    lv_obj_set_size(u->sw, 54, 28);
+    lv_obj_set_style_bg_color(u->sw, C_ON, LV_PART_INDICATOR | LV_STATE_CHECKED);
+    s_actions.push_back({eid, "humidifier", "toggle"});
+    lv_obj_add_event_cb(u->sw, switch_cb, LV_EVENT_VALUE_CHANGED,
+                        (void *)(intptr_t)(s_actions.size() - 1));
+
+    s_umid.push_back(u);
+    Bind b; b.eid = eid; b.kind = B_UMID; b.obj = c;
+    b.icon = NULL; b.l_name = NULL; b.l_state = NULL;
+    b.extra = (int)s_umid.size() - 1;
+    s_binds.push_back(b);
+    umid_refresh(u, eid);
+}
+
+// ------------------------------------------------------------------ alarm-panel
+
+/* Card "alarm-panel": stato dell'allarme e i tasti per inserirlo o
+   disinserirlo. Il codice, se l'impianto lo chiede, lo scrive chi sta davanti
+   al pannello sulla tastiera: non viene mai salvato ne' scritto nel log. */
+struct Allarme {
+    std::string eid;
+    lv_obj_t   *stato;
+    lv_obj_t   *codice;      // NULL se l'impianto non chiede codice
+    std::vector<std::string> servizi;
+};
+std::vector<Allarme *> s_allarmi;
+
+static void allarme_refresh(Allarme *a)
+{
+    const std::string &st = ent(a->eid).state;
+    const char *t = st.c_str();
+    lv_color_t col = C_TEXT;
+    if (st == "disarmed")                          { t = "Disinserito"; col = lv_color_hex(0x43a047); }
+    else if (st == "armed_home")                   { t = "Inserito in casa"; col = lv_color_hex(0xff9800); }
+    else if (st == "armed_away")                   { t = "Inserito fuori casa"; col = lv_color_hex(0xff9800); }
+    else if (st == "armed_night")                  { t = "Inserito notte"; col = lv_color_hex(0xff9800); }
+    else if (st == "armed_vacation")               { t = "Inserito vacanza"; col = lv_color_hex(0xff9800); }
+    else if (st == "arming" || st == "pending")    { t = "In inserimento..."; col = lv_color_hex(0xffa600); }
+    else if (st == "triggered")                    { t = "ALLARME"; col = lv_color_hex(0xdb4437); }
+    lv_label_set_text(a->stato, t);
+    lv_obj_set_style_text_color(a->stato, col, 0);
+}
+
+static void allarme_cb(lv_event_t *e)
+{
+    lv_obj_t *b = (lv_obj_t *)lv_event_get_target(e);
+    Allarme *a = (Allarme *)lv_obj_get_user_data(b);
+    intptr_t i = (intptr_t)lv_event_get_user_data(e);
+    if (!a || i < 0 || i >= (intptr_t)a->servizi.size()) return;
+
+    const char *cod = a->codice ? lv_textarea_get_text(a->codice) : NULL;
+    if (cod && *cod) {
+        /* Il codice viaggia dentro la chiamata al servizio e basta: non si
+           salva, non si stampa, e la casella si svuota subito dopo. */
+        std::string extra = std::string("\"code\":\"") + cod + "\"";
+        ha_ws_call_service_data("alarm_control_panel", a->servizi[i].c_str(),
+                                a->eid.c_str(), extra.c_str());
+        lv_textarea_set_text(a->codice, "");
+    } else {
+        ha_ws_call_service("alarm_control_panel", a->servizi[i].c_str(), a->eid.c_str());
+    }
+}
+
+static void render_alarm_panel(lv_obj_t *parent, const cJSON *card, int w, int h)
+{
+    const char *eid = jstr(card, "entity");
+    if (!eid) { render_placeholder(parent, card, w, h); return; }
+    Allarme *a = new Allarme();
+    a->eid = eid;
+
+    lv_obj_t *c = mk_card(parent, w, h > 0 ? h : 4 * ROW_H + 3 * GAP);
+    lv_obj_set_style_pad_all(c, 14, 0);
+    lv_obj_set_flex_flow(c, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(c, 8, 0);
+
+    const char *nm = jstr(card, "name");
+    lv_obj_t *ln = mk_label(c, "", &lv_font_montserrat_16, C_TEXT2, w - 28);
+    bind(eid, B_NAME, ln, NULL, NULL, NULL, nm ? sanitize(nm) : "");
+    a->stato = mk_label(c, "", &lv_font_montserrat_24, C_TEXT, w - 28);
+
+    /* Gli stati che l'utente ha scelto, piu' il disinserimento che c'e'
+       sempre: una card da cui non si puo' spegnere l'allarme non serve. */
+    std::vector<std::string> nomi;
+    a->servizi.push_back("alarm_disarm"); nomi.push_back("Disinserisci");
+    const cJSON *st;
+    cJSON_ArrayForEach(st, cJSON_GetObjectItem(card, "states")) {
+        if (!cJSON_IsString(st)) continue;
+        std::string v = st->valuestring;
+        if      (v == "arm_home")     { a->servizi.push_back("alarm_arm_home");     nomi.push_back("In casa"); }
+        else if (v == "arm_away")     { a->servizi.push_back("alarm_arm_away");     nomi.push_back("Fuori casa"); }
+        else if (v == "arm_night")    { a->servizi.push_back("alarm_arm_night");    nomi.push_back("Notte"); }
+        else if (v == "arm_vacation") { a->servizi.push_back("alarm_arm_vacation"); nomi.push_back("Vacanza"); }
+    }
+    if (a->servizi.size() == 1) { a->servizi.push_back("alarm_arm_away"); nomi.push_back("Fuori casa"); }
+
+    a->codice = lv_textarea_create(c);
+    lv_obj_set_width(a->codice, w - 28);
+    lv_textarea_set_one_line(a->codice, true);
+    lv_textarea_set_password_mode(a->codice, true);
+    lv_textarea_set_placeholder_text(a->codice, "Codice, se serve");
+
+    lv_obj_t *riga = mk_box(c, w - 28, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(riga, LV_FLEX_FLOW_ROW_WRAP);
+    lv_obj_set_style_pad_column(riga, 6, 0);
+    lv_obj_set_style_pad_row(riga, 6, 0);
+    for (size_t i = 0; i < a->servizi.size(); i++) {
+        lv_obj_t *b = lv_btn_create(riga);
+        lv_obj_set_height(b, 42);
+        lv_obj_set_width(b, (w - 40) / 2);
+        lv_obj_set_style_bg_color(b, lv_color_hex(0x2b2d31), 0);
+        lv_obj_set_style_shadow_width(b, 0, 0);
+        lv_obj_set_user_data(b, a);
+        lv_obj_add_event_cb(b, allarme_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+        lv_obj_t *l = lv_label_create(b);
+        lv_label_set_text(l, nomi[i].c_str());
+        lv_obj_set_style_text_font(l, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_color(l, C_TEXT, 0);
+        lv_obj_center(l);
+    }
+
+    s_allarmi.push_back(a);
+    Bind b; b.eid = eid; b.kind = B_ALLARME; b.obj = c;
+    b.icon = NULL; b.l_name = NULL; b.l_state = NULL;
+    b.extra = (int)s_allarmi.size() - 1;
+    s_binds.push_back(b);
+    allarme_refresh(a);
+}
+
+// ------------------------------------------------------------------ condizioni
+
+/* Le condizioni di Home Assistant, usate da "conditional" e da
+   "entity-filter". Ne esistono due scritture: quella breve di una volta
+   ({entity, state}) e quella nuova con "condition". Si accettano entrambe,
+   perche' le dashboard scritte anni fa sono ancora in giro.
+
+   Una condizione che non sappiamo valutare vale VERA. E' una scelta: il
+   dubbio deve far vedere la card, non nasconderla. Una card sparita non si
+   cerca, e chi guarda il pannello non saprebbe nemmeno che manca. */
+static bool condizione_vera(const cJSON *cond);
+
+static bool condizioni_vere(const cJSON *arr)
+{
+    const cJSON *c;
+    cJSON_ArrayForEach(c, arr) if (!condizione_vera(c)) return false;
+    return true;
+}
+
+static bool condizione_vera(const cJSON *cond)
+{
+    if (!cJSON_IsObject(cond)) return true;
+    const char *tipo = jstr(cond, "condition");
+    const char *eid  = jstr(cond, "entity");
+
+    if (tipo && !strcmp(tipo, "and")) return condizioni_vere(cJSON_GetObjectItem(cond, "conditions"));
+    if (tipo && !strcmp(tipo, "or")) {
+        const cJSON *c;
+        cJSON_ArrayForEach(c, cJSON_GetObjectItem(cond, "conditions"))
+            if (condizione_vera(c)) return true;
+        return false;
+    }
+    if (tipo && !strcmp(tipo, "not")) return !condizioni_vere(cJSON_GetObjectItem(cond, "conditions"));
+
+    if (tipo && !strcmp(tipo, "numeric_state")) {
+        if (!eid) return true;
+        double v;
+        if (!state_number(ent(eid).state.c_str(), &v)) return false;
+        const cJSON *a = cJSON_GetObjectItem(cond, "above");
+        const cJSON *b = cJSON_GetObjectItem(cond, "below");
+        if (cJSON_IsNumber(a) && !(v > a->valuedouble)) return false;
+        if (cJSON_IsNumber(b) && !(v < b->valuedouble)) return false;
+        return true;
+    }
+
+    /* "state" esplicito, oppure la scrittura breve senza "condition". */
+    if (!tipo || !strcmp(tipo, "state")) {
+        if (!eid) return true;
+        const std::string &st = ent(eid).state;
+        const cJSON *want = cJSON_GetObjectItem(cond, "state");
+        const cJSON *nope = cJSON_GetObjectItem(cond, "state_not");
+        auto combacia = [&](const cJSON *v) {
+            if (cJSON_IsString(v)) return st == v->valuestring;
+            if (cJSON_IsArray(v)) {
+                const cJSON *x;
+                cJSON_ArrayForEach(x, v) if (cJSON_IsString(x) && st == x->valuestring) return true;
+                return false;
+            }
+            return false;
+        };
+        if (want && !combacia(want)) return false;
+        if (nope && combacia(nope)) return false;
+        return true;
+    }
+
+    return true;      // screen, user, location e i tipi futuri
+}
+
+/* Raccoglie le entita' che compaiono in un albero di condizioni: sono quelle
+   il cui cambiamento deve far rivalutare la card. */
+static void entita_delle_condizioni(const cJSON *n, std::vector<std::string> &out)
+{
+    if (!n) return;
+    if (cJSON_IsObject(n)) {
+        const char *e = jstr(n, "entity");
+        if (e) out.push_back(e);
+    }
+    const cJSON *f;
+    cJSON_ArrayForEach(f, n)
+        if (cJSON_IsObject(f) || cJSON_IsArray(f)) entita_delle_condizioni(f, out);
+}
+
+// --------------------------------------------- card che si rifanno da sole
+
+/* Le card il cui *contenuto* cambia quando cambiano gli stati, non solo le
+   etichette: "conditional" appare e sparisce, "entity-filter" cambia elenco.
+   Non basta aggiornare un'etichetta: va rifatto il disegno.
+
+   Stesso schema delle card dell'energia: il contenitore si crea una volta, il
+   dentro si rigenera al suo posto. Ricostruire l'intera vista sarebbe stato
+   piu' semplice, ma farebbe saltare via lo scorrimento sotto le dita. */
+struct DynCard {
+    lv_obj_t    *box;
+    const cJSON *card;                  // vive dentro s_view
+    std::string  tipo;
+    int w, h;
+    std::vector<std::string> guarda;    // entita' che la fanno rivalutare
+};
+static std::vector<DynCard> s_dyn;
+
+static void fill_dyn(DynCard &d);
+
+static void render_dyn(lv_obj_t *parent, const cJSON *card, const std::string &tipo,
+                       int w, int h, const std::vector<std::string> &guarda)
+{
+    lv_obj_t *box = mk_box(parent, w, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(box, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_all(box, 0, 0);
+    DynCard d; d.box = box; d.card = card; d.tipo = tipo; d.w = w; d.h = h; d.guarda = guarda;
+    s_dyn.push_back(d);
+    fill_dyn(s_dyn.back());
+}
+
+static void dyn_aggiorna(const std::string &eid)
+{
+    for (DynCard &d : s_dyn) {
+        bool mia = false;
+        for (const std::string &g : d.guarda) if (g == eid) { mia = true; break; }
+        if (!mia || !d.box) continue;
+        lv_obj_clean(d.box);
+        fill_dyn(d);
+    }
+}
+
+/* Il contenuto di una card che si rifa' da sola. Sta qui e non con le altre
+   perche' ha bisogno di render_card: una "conditional" disegna dentro di se'
+   una card qualunque, comprese le altre che si rifanno da sole. */
+static void fill_dyn(DynCard &d)
+{
+    if (d.tipo == "conditional") {
+        if (!condizioni_vere(cJSON_GetObjectItem(d.card, "conditions"))) return;   // nascosta
+        const cJSON *dentro = cJSON_GetObjectItem(d.card, "card");
+        if (dentro) render_card(d.box, dentro, d.w, d.h);
+        return;
+    }
+
+    /* entity-filter: si tengono le entita' che passano il filtro e si passano
+       alla card interna, che se non e' indicata e' una "entities". */
+    const cJSON *cond = cJSON_GetObjectItem(d.card, "conditions");
+    const cJSON *vecchio = cJSON_GetObjectItem(d.card, "state_filter");   // scrittura di una volta
+
+    cJSON *tenute = cJSON_CreateArray();
+    const cJSON *row;
+    cJSON_ArrayForEach(row, cJSON_GetObjectItem(d.card, "entities")) {
+        const char *eid = cJSON_IsString(row) ? row->valuestring : jstr(row, "entity");
+        if (!eid) continue;
+        bool passa = true;
+        if (cJSON_IsArray(cond) && cJSON_GetArraySize(cond) > 0) {
+            /* Le condizioni possono non nominare l'entita': valgono per quella
+               della riga. Si valuta una copia con l'entita' riempita. */
+            const cJSON *c;
+            cJSON_ArrayForEach(c, cond) {
+                cJSON *cc = cJSON_Duplicate(c, true);
+                if (!cJSON_GetObjectItem(cc, "entity"))
+                    cJSON_AddStringToObject(cc, "entity", eid);
+                bool ok = condizione_vera(cc);
+                cJSON_Delete(cc);
+                if (!ok) { passa = false; break; }
+            }
+        } else if (cJSON_IsArray(vecchio)) {
+            passa = false;
+            const cJSON *v;
+            const std::string &st = ent(eid).state;
+            cJSON_ArrayForEach(v, vecchio) {
+                if (cJSON_IsString(v) && st == v->valuestring) { passa = true; break; }
+                if (cJSON_IsObject(v)) {
+                    cJSON *cc = cJSON_Duplicate(v, true);
+                    if (!cJSON_GetObjectItem(cc, "entity"))
+                        cJSON_AddStringToObject(cc, "entity", eid);
+                    bool ok = condizione_vera(cc);
+                    cJSON_Delete(cc);
+                    if (ok) { passa = true; break; }
+                }
+            }
+        }
+        if (passa) cJSON_AddItemToArray(tenute, cJSON_Duplicate(row, true));
+    }
+
+    if (cJSON_GetArraySize(tenute) == 0) {
+        /* Nessuna entita' passa: meglio dirlo che lasciare un buco muto, che
+           sembrerebbe un guasto. */
+        const cJSON *mostra = cJSON_GetObjectItem(d.card, "show_empty");
+        if (!mostra || cJSON_IsTrue(mostra)) {
+            lv_obj_t *c = mk_card(d.box, d.w, ROW_H);
+            lv_obj_set_style_pad_all(c, 14, 0);
+            mk_label(c, "Nessuna corrisponde", &lv_font_montserrat_16, C_TEXT2, d.w - 28);
+        }
+        cJSON_Delete(tenute);
+        return;
+    }
+
+    const cJSON *modello = cJSON_GetObjectItem(d.card, "card");
+    cJSON *dentro = modello ? cJSON_Duplicate(modello, true) : cJSON_CreateObject();
+    if (!cJSON_GetObjectItem(dentro, "type")) cJSON_AddStringToObject(dentro, "type", "entities");
+    cJSON_DeleteItemFromObject(dentro, "entities");
+    cJSON_AddItemToObject(dentro, "entities", tenute);      // "dentro" se ne prende carico
+
+    /* La card interna vive il tempo del disegno: quello che le serve lo copia
+       nelle proprie etichette, e i bind tengono gli id per conto loro. */
+    render_card(d.box, dentro, d.w, d.h);
+    cJSON_Delete(dentro);
+}
+
+// ------------------------------------------------------------------ elenchi
+//
+// Quattro card che non mostrano lo stato di un'entita' ma un elenco che va
+// chiesto a parte: le cose da fare, la lista della spesa, gli appuntamenti e
+// il registro degli eventi.
+//
+// Hanno tutte la stessa forma - si chiede, si aspetta, si riempie - quindi
+// condividono il registro e il modo di disegnare le righe. Cambia solo dove si
+// va a chiedere: le prime due dal WebSocket, le altre due dall'API HTTP, che
+// per calendario e registro e' l'unica che le espone.
+//
+// Le richieste passano una alla volta da un filo solo, come i grafici e
+// l'energia: mandarne quattro insieme appena costruita la vista e' esattamente
+// la raffica che il collegamento SDIO verso il C6 regge peggio.
+
+enum TipoElenco { EL_TODO, EL_SPESA, EL_CALENDARIO, EL_REGISTRO };
+
+struct Riga { std::string testo, sotto; bool fatta = false; std::string uid; };
+
+struct Elenco {
+    TipoElenco tipo;
+    lv_obj_t  *box   = NULL;      // dove vanno le righe
+    lv_obj_t  *stato = NULL;      // "Caricamento...", o il motivo
+    std::string eid;              // entita', dove serve
+    std::vector<std::string> eids;  // calendario/registro: possono essere piu' d'una
+    int  giorni = 7;              // calendario
+    int  ore = 24;                // registro
+    int  massimo = 10;
+    int  larghezza = 0;
+    bool nascondi_fatte = false;
+    bool in_corso = false;
+    int64_t prossimo = 0;         // quando richiedere (secondi)
+    std::vector<Riga> righe;
+    bool arrivato = false;
+};
+static std::vector<Elenco *> s_elenchi;
+
+/* Ridisegna le righe di un elenco. */
+static void elenco_disegna(Elenco *e)
+{
+    if (!e->box) return;
+    lv_obj_clean(e->box);
+
+    if (!e->arrivato) {
+        lv_label_set_text(e->stato, "Caricamento...");
+        return;
+    }
+    if (e->righe.empty()) {
+        lv_label_set_text(e->stato,
+            e->tipo == EL_TODO || e->tipo == EL_SPESA ? "Niente da fare"
+            : e->tipo == EL_CALENDARIO ? "Nessun appuntamento" : "Niente da segnalare");
+        return;
+    }
+    lv_label_set_text(e->stato, "");
+
+    int w = e->larghezza - 28;
+    int n = 0;
+    for (const Riga &r : e->righe) {
+        if (n++ >= e->massimo) break;
+        lv_obj_t *riga = mk_box(e->box, w, LV_SIZE_CONTENT);
+        lv_obj_set_flex_flow(riga, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(riga, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_column(riga, 8, 0);
+        lv_obj_set_style_pad_ver(riga, 4, 0);
+
+        if (e->tipo == EL_TODO || e->tipo == EL_SPESA) {
+            lv_obj_t *i = mk_icon(riga, 22);
+            lv_obj_set_style_bg_opa(i, LV_OPA_TRANSP, 0);
+            char gl[8];
+            /* La coppia delle caselle, non i cerchi: "circle-outline" non e'
+               fra le icone compilate dentro il pannello, e una voce da fare
+               compariva senza niente accanto - cioe' senza il segno che dice
+               che c'e' qualcosa da spuntare. */
+            lv_label_set_text(lv_obj_get_child(i, 0),
+                mdi_icon_text(r.fatta ? "checkbox-marked-outline" : "checkbox-blank-outline",
+                              gl, sizeof(gl)) ? gl : "");
+            lv_obj_set_style_text_color(lv_obj_get_child(i, 0),
+                                        r.fatta ? C_ICON_OFF : C_ON, 0);
+        }
+
+        lv_obj_t *col = mk_box(riga, w - 34, LV_SIZE_CONTENT);
+        lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_flex_grow(col, 1);
+        lv_obj_t *t = mk_label(col, r.testo, &lv_font_montserrat_16,
+                               r.fatta ? C_TEXT2 : C_TEXT, w - 34);
+        (void)t;
+        if (!r.sotto.empty())
+            mk_label(col, r.sotto, &lv_font_montserrat_14, C_TEXT2, w - 34);
+    }
+    if ((int)e->righe.size() > e->massimo) {
+        char b[48];
+        snprintf(b, sizeof(b), "e altre %d", (int)e->righe.size() - e->massimo);
+        mk_label(e->box, b, &lv_font_montserrat_14, C_TEXT2, w);
+    }
+}
+
+/* ---- lettura delle risposte ---- */
+
+static void elenco_da_todo(Elenco *e, const cJSON *res)
+{
+    e->righe.clear();
+    const cJSON *it;
+    cJSON_ArrayForEach(it, cJSON_GetObjectItem(res, "items")) {
+        const char *sum = jstr(it, "summary");
+        if (!sum) continue;
+        const char *st = jstr(it, "status");
+        Riga r;
+        r.testo = sanitize(sum);
+        r.fatta = st && !strcmp(st, "completed");
+        if (e->nascondi_fatte && r.fatta) continue;
+        const char *due = jstr(it, "due");
+        if (due) r.sotto = std::string("entro ") + sanitize(due);
+        const char *uid = jstr(it, "uid");
+        if (uid) r.uid = uid;
+        e->righe.push_back(r);
+    }
+    /* Prima le cose da fare, poi quelle fatte: e' l'ordine in cui si guarda
+       una lista, e su un pannello si vedono solo le prime righe. */
+    std::stable_sort(e->righe.begin(), e->righe.end(),
+                     [](const Riga &a, const Riga &b) { return !a.fatta && b.fatta; });
+}
+
+static void elenco_da_spesa(Elenco *e, const cJSON *res)
+{
+    e->righe.clear();
+    const cJSON *it;
+    cJSON_ArrayForEach(it, res) {
+        const char *nome = jstr(it, "name");
+        if (!nome) continue;
+        Riga r;
+        r.testo = sanitize(nome);
+        r.fatta = cJSON_IsTrue(cJSON_GetObjectItem(it, "complete"));
+        if (e->nascondi_fatte && r.fatta) continue;
+        e->righe.push_back(r);
+    }
+    std::stable_sort(e->righe.begin(), e->righe.end(),
+                     [](const Riga &a, const Riga &b) { return !a.fatta && b.fatta; });
+}
+
+/* "2026-09-30T18:30:00+02:00" -> "mar 30 set, 18:30". Le date tutte-il-giorno
+   arrivano come "2026-09-30" e non hanno ora da mostrare. */
+static std::string quando_leggibile(const char *iso)
+{
+    if (!iso) return "";
+    int Y = 0, M = 0, D = 0, h = -1, m = 0;
+    if (sscanf(iso, "%d-%d-%dT%d:%d", &Y, &M, &D, &h, &m) < 3) return sanitize(iso);
+    static const char *mesi[] = {"gen","feb","mar","apr","mag","giu",
+                                 "lug","ago","set","ott","nov","dic"};
+    char b[48];
+    if (h < 0) snprintf(b, sizeof(b), "%d %s", D, (M >= 1 && M <= 12) ? mesi[M-1] : "");
+    else       snprintf(b, sizeof(b), "%d %s, %02d:%02d", D,
+                        (M >= 1 && M <= 12) ? mesi[M-1] : "", h, m);
+    return b;
+}
+
+static void elenco_da_calendario(Elenco *e, const cJSON *arr)
+{
+    const cJSON *ev;
+    cJSON_ArrayForEach(ev, arr) {
+        const char *sum = jstr(ev, "summary");
+        if (!sum) continue;
+        const cJSON *st = cJSON_GetObjectItem(ev, "start");
+        const char *quando = NULL;
+        if (cJSON_IsString(st)) quando = st->valuestring;
+        else if (cJSON_IsObject(st)) {
+            const cJSON *dt = cJSON_GetObjectItem(st, "dateTime");
+            if (!cJSON_IsString(dt)) dt = cJSON_GetObjectItem(st, "date");
+            if (cJSON_IsString(dt)) quando = dt->valuestring;
+        }
+        Riga r;
+        r.testo = sanitize(sum);
+        r.sotto = quando_leggibile(quando);
+        e->righe.push_back(r);
+    }
+}
+
+static void elenco_da_registro(Elenco *e, const cJSON *arr)
+{
+    e->righe.clear();
+    const cJSON *v;
+    cJSON_ArrayForEach(v, arr) {
+        const char *nome = jstr(v, "name");
+        const char *msg  = jstr(v, "message");
+        const char *st   = jstr(v, "state");
+        if (!nome && !msg) continue;
+        Riga r;
+        r.testo = sanitize(nome ? nome : "");
+        if (msg)      r.sotto = sanitize(msg);
+        else if (st)  r.sotto = sanitize(st);
+        const char *q = jstr(v, "when");
+        if (q) {
+            std::string t = quando_leggibile(q);
+            if (!t.empty()) r.sotto += (r.sotto.empty() ? "" : "  ") + t;
+        }
+        e->righe.push_back(r);
+    }
+    /* Il registro arriva dal piu' vecchio al piu' nuovo; su un pannello
+       interessa quello che e' appena successo. */
+    std::reverse(e->righe.begin(), e->righe.end());
+}
+
+
+/* ---- la raccolta ----
+
+   Un filo solo, una richiesta alla volta, e fra una e l'altra una pausa. Non
+   e' pigrizia: le card di una vista si costruiscono tutte insieme, e se
+   ognuna partisse per conto suo il collegamento verso il C6 si troverebbe
+   quattro richieste in volo nello stesso istante. E' il guasto che questo
+   progetto ha gia' inseguito una volta. */
+
+#define ELENCO_RINFRESCO_S 300
+
+static TaskHandle_t s_el_task = NULL;
+
+static void elenco_risposta_ws(bool ok, cJSON *result, const char *error, void *ctx)
+{
+    Elenco *e = (Elenco *)ctx;
+    bsp_display_lock(0);
+    /* Fra la richiesta e la risposta la vista puo' essere stata rifatta: se
+       questo elenco non c'e' piu', quello che e' arrivato non riguarda
+       nessuno. */
+    bool vivo = false;
+    for (Elenco *x : s_elenchi) if (x == e) { vivo = true; break; }
+    if (vivo) {
+        if (ok && result) {
+            if (e->tipo == EL_TODO) elenco_da_todo(e, result);
+            else                    elenco_da_spesa(e, result);
+            e->arrivato = true;
+        } else if (e->stato) {
+            lv_label_set_text(e->stato, error ? error : "Non arrivato");
+        }
+        e->in_corso = false;
+        e->prossimo = now_s() + ELENCO_RINFRESCO_S;
+        elenco_disegna(e);
+    }
+    bsp_display_unlock();
+}
+
+/* Calendario e registro non stanno sul WebSocket: si chiedono all'API HTTP.
+   La risposta puo' essere lunga, quindi il buffer sta in PSRAM. */
+static void elenco_http(Elenco *e)
+{
+    char base[HA_URL_MAX];
+    if (!ha_http_base(base, sizeof(base))) return;
+
+    time_t ora = (time_t)now_s();
+    struct tm tm;
+    char da[40], a[40], url[512];
+
+    if (e->tipo == EL_CALENDARIO) {
+        gmtime_r(&ora, &tm);
+        strftime(da, sizeof(da), "%Y-%m-%dT%H:%M:%SZ", &tm);
+        time_t fine = ora + (time_t)e->giorni * 86400;
+        gmtime_r(&fine, &tm);
+        strftime(a, sizeof(a), "%Y-%m-%dT%H:%M:%SZ", &tm);
+    } else {
+        time_t inizio = ora - (time_t)e->ore * 3600;
+        gmtime_r(&inizio, &tm);
+        strftime(da, sizeof(da), "%Y-%m-%dT%H:%M:%SZ", &tm);
+        a[0] = 0;
+    }
+
+    const size_t N = 24 * 1024;
+    char *resp = (char *)heap_caps_malloc(N, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!resp) resp = (char *)malloc(N);
+    if (!resp) return;
+
+    std::vector<Riga> raccolte;
+    bool almeno_una = false;
+    for (const std::string &eid : e->eids) {
+        if (e->tipo == EL_CALENDARIO)
+            snprintf(url, sizeof(url), "%s/api/calendars/%s?start=%s&end=%s",
+                     base, eid.c_str(), da, a);
+        else
+            snprintf(url, sizeof(url), "%s/api/logbook/%s?entity=%s", base, da, eid.c_str());
+
+        int codice = ha_http_get_auth(url, resp, N);
+        if (codice != 200) {
+            ESP_LOGW(TAG, "%s: HTTP %d", e->tipo == EL_CALENDARIO ? "calendario" : "registro", codice);
+            continue;
+        }
+        cJSON *j = cJSON_Parse(resp);
+        if (!cJSON_IsArray(j)) { cJSON_Delete(j); continue; }
+        almeno_una = true;
+        bsp_display_lock(0);
+        bool vivo = false;
+        for (Elenco *x : s_elenchi) if (x == e) { vivo = true; break; }
+        if (vivo) {
+            if (e->tipo == EL_CALENDARIO) elenco_da_calendario(e, j);
+            else                          elenco_da_registro(e, j);
+        }
+        bsp_display_unlock();
+        cJSON_Delete(j);
+    }
+    free(resp);
+    (void)raccolte;
+
+    bsp_display_lock(0);
+    bool vivo = false;
+    for (Elenco *x : s_elenchi) if (x == e) { vivo = true; break; }
+    if (vivo) {
+        e->arrivato = almeno_una;
+        if (!almeno_una && e->stato) lv_label_set_text(e->stato, "Non arrivato");
+        e->in_corso = false;
+        e->prossimo = now_s() + ELENCO_RINFRESCO_S;
+        elenco_disegna(e);
+    }
+    bsp_display_unlock();
+}
+
+static void elenco_task(void *arg)
+{
+    while (true) {
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(10000));
+        if (!ha_ws_connected() || !clock_valid()) continue;
+
+        Elenco *da_fare = NULL;
+        bsp_display_lock(0);
+        for (Elenco *e : s_elenchi) {
+            if (e->in_corso || now_s() < e->prossimo) continue;
+            da_fare = e;
+            e->in_corso = true;
+            break;
+        }
+        bsp_display_unlock();
+        if (!da_fare) continue;
+
+        if (da_fare->tipo == EL_TODO || da_fare->tipo == EL_SPESA) {
+            std::string body;
+            if (da_fare->tipo == EL_TODO)
+                body = "\"type\":\"todo/item/list\",\"entity_id\":\"" + da_fare->eid + "\"";
+            else
+                body = "\"type\":\"shopping_list/items\"";
+            if (ha_ws_request(body.c_str(), elenco_risposta_ws, da_fare) < 0) {
+                bsp_display_lock(0);
+                da_fare->in_corso = false;
+                da_fare->prossimo = now_s() + 60;
+                bsp_display_unlock();
+            }
+        } else {
+            elenco_http(da_fare);
+        }
+        /* Una pausa fra un elenco e l'altro: e' il punto di tutto questo. */
+        vTaskDelay(pdMS_TO_TICKS(1500));
+        if (s_el_task) xTaskNotifyGive(s_el_task);
+    }
+}
+
+static void elenco_sveglia(void)
+{
+    if (!s_el_task)
+        xTaskCreate(elenco_task, "ll_liste", 6144, NULL, 3, &s_el_task);
+    else
+        xTaskNotifyGive(s_el_task);
+}
+
+/* ---- disegno delle card ---- */
+
+static Elenco *elenco_nuovo(lv_obj_t *parent, const cJSON *card, int w, int h,
+                            TipoElenco tipo, const char *titolo_def)
+{
+    Elenco *e = new Elenco();
+    e->tipo = tipo;
+    e->larghezza = w;
+    e->massimo = (int)jnum(card, "max_items", tipo == EL_REGISTRO ? 8 : 10);
+    e->nascondi_fatte = cJSON_IsTrue(cJSON_GetObjectItem(card, "hide_completed"));
+    e->giorni = (int)jnum(card, "days_to_show", 7);
+    e->ore    = (int)jnum(card, "hours_to_show", 24);
+
+    lv_obj_t *c = mk_card(parent, w, h > 0 ? h : LV_SIZE_CONTENT);
+    lv_obj_set_style_pad_all(c, 14, 0);
+    lv_obj_set_flex_flow(c, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(c, 2, 0);
+    const char *tit = jstr(card, "title");
+    mk_label(c, sanitize(tit ? tit : titolo_def), &lv_font_montserrat_22, C_TEXT, w - 28);
+    e->stato = mk_label(c, "Caricamento...", &lv_font_montserrat_14, C_TEXT2, w - 28);
+    e->box   = mk_box(c, w - 28, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(e->box, LV_FLEX_FLOW_COLUMN);
+
+    s_elenchi.push_back(e);
+    elenco_sveglia();
+    return e;
+}
+
+static void render_todo(lv_obj_t *parent, const cJSON *card, int w, int h)
+{
+    const char *eid = jstr(card, "entity");
+    if (!eid) { render_placeholder(parent, card, w, h); return; }
+    Elenco *e = elenco_nuovo(parent, card, w, h, EL_TODO, "Da fare");
+    e->eid = eid;
+}
+
+static void render_shopping(lv_obj_t *parent, const cJSON *card, int w, int h)
+{
+    elenco_nuovo(parent, card, w, h, EL_SPESA, "Lista della spesa");
+}
+
+static void raccogli_eids(const cJSON *card, std::vector<std::string> &out)
+{
+    const cJSON *r;
+    cJSON_ArrayForEach(r, cJSON_GetObjectItem(card, "entities")) {
+        const char *id = cJSON_IsString(r) ? r->valuestring : jstr(r, "entity");
+        if (id) out.push_back(id);
+    }
+    if (out.empty()) {
+        const cJSON *t = cJSON_GetObjectItem(card, "target");
+        cJSON_ArrayForEach(r, cJSON_GetObjectItem(t, "entity_id"))
+            if (cJSON_IsString(r)) out.push_back(r->valuestring);
+        const cJSON *uno = cJSON_GetObjectItem(t, "entity_id");
+        if (out.empty() && cJSON_IsString(uno)) out.push_back(uno->valuestring);
+    }
+    if (out.empty()) {
+        const char *id = jstr(card, "entity");
+        if (id) out.push_back(id);
+    }
+}
+
+static void render_calendar(lv_obj_t *parent, const cJSON *card, int w, int h)
+{
+    std::vector<std::string> ids;
+    raccogli_eids(card, ids);
+    if (ids.empty()) { render_placeholder(parent, card, w, h); return; }
+    Elenco *e = elenco_nuovo(parent, card, w, h, EL_CALENDARIO, "Calendario");
+    e->eids = ids;
+}
+
+static void render_logbook(lv_obj_t *parent, const cJSON *card, int w, int h)
+{
+    std::vector<std::string> ids;
+    raccogli_eids(card, ids);
+    if (ids.empty()) { render_placeholder(parent, card, w, h); return; }
+    Elenco *e = elenco_nuovo(parent, card, w, h, EL_REGISTRO, "Registro");
+    e->eids = ids;
+}
+
+// ------------------------------------------------------------------ figure
+//
+// Le quattro card che mostrano un'immagine. Quello che hanno in comune e' il
+// modo di prenderla: si chiede a web_image, e se non e' ancora pronta si
+// lascia un riquadro con scritto perche'. Quando arriva, la card si rifa' da
+// sola - lo stesso schema delle card dell'energia e di "conditional".
+
+struct FiguraUI {
+    lv_obj_t    *box = NULL;
+    const cJSON *card = NULL;      // vive dentro s_view
+    std::string  tipo;
+    int w = 0, h = 0;
+};
+static std::vector<FiguraUI> s_figure;
+
+static void fill_figura(FiguraUI &f);
+
+/* Da dove prende l'immagine questa card.
+
+   "image" e' un indirizzo o un percorso; "camera_image" e' una telecamera, e
+   allora l'indirizzo lo si compone come fa Home Assistant. "image_entity" e'
+   la forma nuova: un'entita' image.* il cui stato porta l'indirizzo. */
+static std::string sorgente_figura(const cJSON *card, bool *dal_vivo)
+{
+    *dal_vivo = false;
+    const char *cam = jstr(card, "camera_image");
+    if (cam) {
+        *dal_vivo = true;                 // una telecamera cambia: non si tiene da parte
+        return std::string("/api/camera_proxy/") + cam;
+    }
+    const char *ie = jstr(card, "image_entity");
+    if (ie) {
+        auto it = s_ent.find(ie);
+        if (it != s_ent.end() && !it->second.state.empty()) {
+            /* Le entita' image.* tengono l'indirizzo negli attributi; se non
+               c'e', lo stato stesso spesso lo e'. */
+            return it->second.state;
+        }
+    }
+    const char *img = jstr(card, "image");
+    if (img) return img;
+    return std::string();
+}
+
+/* Riempie il contenitore di una card figura. */
+static void fill_figura(FiguraUI &f)
+{
+    bool dal_vivo = false;
+    std::string src = sorgente_figura(f.card, &dal_vivo);
+    const std::string &t = f.tipo;
+
+    if (src.empty()) {
+        mk_label(f.box, "Nessuna immagine indicata", &lv_font_montserrat_14, C_TEXT2, f.w - 20);
+        return;
+    }
+
+    web_image_t img;
+    if (!web_image_prendi(src.c_str(), &img, dal_vivo)) {
+        mk_label(f.box, "Scarico l'immagine...", &lv_font_montserrat_14, C_TEXT2, f.w - 20);
+        return;
+    }
+
+    /* L'immagine sta sotto; quello che si sovrappone va sopra, dentro lo
+       stesso contenitore. */
+    lv_obj_t *sotto = mk_box(f.box, f.w, f.h);
+    lv_obj_set_style_clip_corner(sotto, true, 0);
+    lv_obj_t *o = web_image_mostra(sotto, &img, f.w, f.h);
+    if (!o) {
+        mk_label(f.box, "Immagine non leggibile", &lv_font_montserrat_14, C_TEXT2, f.w - 20);
+        return;
+    }
+
+    /* Il riquadro si stringe sulla figura.
+
+       Una figura larga 480 dentro una card larga 300 viene rimpicciolita, e
+       quello che resta e' piu' piccolo del riquadro: lasciare il riquadro
+       della misura della card vuol dire che la fascia col nome finisce in
+       fondo al riquadro invece che appoggiata al bordo dell'immagine, con una
+       striscia di vuoto in mezzo. Le percentuali di picture-elements hanno lo
+       stesso problema: in Home Assistant sono riferite alla figura, non allo
+       spazio che le sta intorno. */
+    lv_obj_update_layout(o);
+    int fw = lv_obj_get_width(o);
+    int fh = lv_obj_get_height(o);
+    if (fw > 0 && fh > 0) {
+        lv_obj_set_size(sotto, fw, fh);
+        lv_obj_set_style_pad_all(sotto, 0, 0);
+    } else {
+        fw = f.w; fh = f.h;
+    }
+    lv_obj_center(o);
+
+    if (t == "picture") return;        // solo la figura, niente altro
+
+    if (t == "picture-entity") {
+        /* Una fascia in basso con nome e stato, come fa Home Assistant. */
+        const char *eid = jstr(f.card, "entity");
+        if (!eid) return;
+        bool mostra_nome  = !cJSON_IsFalse(cJSON_GetObjectItem(f.card, "show_name"));
+        bool mostra_stato = !cJSON_IsFalse(cJSON_GetObjectItem(f.card, "show_state"));
+        if (!mostra_nome && !mostra_stato) { attach_action(sotto, eid, f.card, LV_EVENT_CLICKED); return; }
+
+        lv_obj_t *fascia = mk_box(sotto, fw, 34);
+        lv_obj_align(fascia, LV_ALIGN_BOTTOM_MID, 0, 0);
+        lv_obj_set_style_bg_color(fascia, lv_color_black(), 0);
+        lv_obj_set_style_bg_opa(fascia, LV_OPA_60, 0);
+        lv_obj_set_flex_flow(fascia, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(fascia, LV_FLEX_ALIGN_SPACE_BETWEEN,
+                              LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_hor(fascia, 10, 0);
+        if (mostra_nome) {
+            const char *nm = jstr(f.card, "name");
+            lv_obj_t *ln = mk_label(fascia, "", &lv_font_montserrat_16, C_TEXT, fw / 2);
+            bind(eid, B_NAME, ln, NULL, NULL, NULL, nm ? sanitize(nm) : "");
+        }
+        if (mostra_stato) {
+            lv_obj_t *ls = mk_label(fascia, "", &lv_font_montserrat_16, C_TEXT, fw / 2);
+            lv_obj_set_style_text_align(ls, LV_TEXT_ALIGN_RIGHT, 0);
+            bind(eid, B_VALUE, ls, NULL, NULL, NULL, "");
+        }
+        attach_action(sotto, eid, f.card, LV_EVENT_CLICKED);
+        return;
+    }
+
+    if (t == "picture-glance") {
+        /* Una riga di icone in basso: quelle che si possono comandare a
+           sinistra, le altre a destra, come in Home Assistant. */
+        lv_obj_t *fascia = mk_box(sotto, fw, 40);
+        lv_obj_align(fascia, LV_ALIGN_BOTTOM_MID, 0, 0);
+        lv_obj_set_style_bg_color(fascia, lv_color_black(), 0);
+        lv_obj_set_style_bg_opa(fascia, LV_OPA_60, 0);
+        lv_obj_set_flex_flow(fascia, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(fascia, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_hor(fascia, 8, 0);
+        lv_obj_set_style_pad_column(fascia, 10, 0);
+
+        const char *titolo = jstr(f.card, "title");
+        if (titolo) {
+            lv_obj_t *lt = mk_box(sotto, fw, 30);
+            lv_obj_align(lt, LV_ALIGN_TOP_MID, 0, 0);
+            lv_obj_set_style_bg_color(lt, lv_color_black(), 0);
+            lv_obj_set_style_bg_opa(lt, LV_OPA_50, 0);
+            lv_obj_set_style_pad_hor(lt, 8, 0);
+            mk_label(lt, sanitize(titolo), &lv_font_montserrat_16, C_TEXT, fw - 16);
+        }
+
+        const cJSON *r;
+        int n = 0;
+        cJSON_ArrayForEach(r, cJSON_GetObjectItem(f.card, "entities")) {
+            const char *eid = cJSON_IsString(r) ? r->valuestring : jstr(r, "entity");
+            if (!eid || n++ >= 8) continue;
+            lv_obj_t *i = mk_icon(fascia, 28);
+            lv_obj_set_style_bg_opa(i, LV_OPA_TRANSP, 0);
+            Bind b; b.eid = eid; b.kind = B_TILE; b.obj = i; b.icon = i;
+            b.l_name = NULL; b.l_state = NULL;
+            s_binds.push_back(b);
+            refresh(s_binds.back());
+            attach_action(i, eid, r, LV_EVENT_CLICKED);
+        }
+        return;
+    }
+
+    /* picture-elements: gli elementi stanno sopra la figura, collocati in
+       percentuale. Si disegnano i tipi che si incontrano davvero su un
+       pannello - lo stato scritto, l'icona, l'etichetta, il tasto - e gli
+       altri si lasciano stare invece di metterci un segnaposto che
+       sporcherebbe la planimetria. */
+    const cJSON *el;
+    cJSON_ArrayForEach(el, cJSON_GetObjectItem(f.card, "elements")) {
+        const char *et = jstr(el, "type");
+        if (!et) continue;
+        const char *eid = jstr(el, "entity");
+
+        /* La posizione e' in percentuale ("34%"), riferita al centro
+           dell'elemento. */
+        const cJSON *st = cJSON_GetObjectItem(el, "style");
+        double px = 50, py = 50;
+        const char *sl = jstr(st, "left");
+        const char *sp = jstr(st, "top");
+        if (sl) px = atof(sl);
+        if (sp) py = atof(sp);
+        int cx = (int)(fw * px / 100.0);
+        int cy = (int)(fh * py / 100.0);
+
+        lv_obj_t *e = NULL;
+        if (!strcmp(et, "state-icon") || !strcmp(et, "icon")) {
+            e = mk_icon(sotto, 32);
+            lv_obj_set_style_bg_opa(e, LV_OPA_50, 0);
+            if (eid) {
+                Bind b; b.eid = eid; b.kind = B_TILE; b.obj = e; b.icon = e;
+                b.l_name = NULL; b.l_state = NULL;
+                s_binds.push_back(b);
+                refresh(s_binds.back());
+            } else {
+                char gl[8];
+                const char *nome = jstr(el, "icon");
+                lv_label_set_text(lv_obj_get_child(e, 0),
+                    nome && mdi_icon_text(nome, gl, sizeof(gl)) ? gl : "");
+            }
+        } else if (!strcmp(et, "state-label") && eid) {
+            e = mk_label(sotto, "", &lv_font_montserrat_16, C_TEXT, fw / 2);
+            lv_obj_set_style_bg_color(e, lv_color_black(), 0);
+            lv_obj_set_style_bg_opa(e, LV_OPA_50, 0);
+            lv_obj_set_style_pad_all(e, 4, 0);
+            bind(eid, B_VALUE, e, NULL, NULL, NULL, "");
+        } else if (!strcmp(et, "state-badge") && eid) {
+            e = mk_label(sotto, "", &lv_font_montserrat_14, C_TEXT, fw / 3);
+            lv_obj_set_style_bg_color(e, C_CARD, 0);
+            lv_obj_set_style_bg_opa(e, LV_OPA_COVER, 0);
+            lv_obj_set_style_radius(e, 10, 0);
+            lv_obj_set_style_pad_all(e, 5, 0);
+            bind(eid, B_VALUE, e, NULL, NULL, NULL, "");
+        }
+        if (!e) continue;
+        /* Il punto indicato e' il CENTRO dell'elemento, come in Home
+           Assistant: appoggiarci l'angolo in alto a sinistra sposterebbe
+           tutto in basso a destra di mezza etichetta. */
+        lv_obj_update_layout(e);
+        lv_obj_align(e, LV_ALIGN_TOP_LEFT,
+                     cx - lv_obj_get_width(e) / 2, cy - lv_obj_get_height(e) / 2);
+        if (eid) attach_action(e, eid, el, LV_EVENT_CLICKED);
+    }
+}
+
+static void render_figura(lv_obj_t *parent, const cJSON *card,
+                          const std::string &tipo, int w, int h)
+{
+    if (h <= 0) h = (int)(w * 9 / 16);        // 16:9, la forma piu' comune
+    lv_obj_t *c = mk_card(parent, w, h);
+    lv_obj_set_style_pad_all(c, 0, 0);
+    lv_obj_set_flex_flow(c, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(c, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    FiguraUI f;
+    f.box = c; f.card = card; f.tipo = tipo; f.w = w; f.h = h;
+    s_figure.push_back(f);
+    fill_figura(s_figure.back());
+}
+
+/* Un'immagine e' arrivata: si rifanno le card che la aspettavano. Chiamata
+   dal filo che scarica, quindi prende il lock da se'. */
+static void figure_aggiorna(void)
+{
+    bsp_display_lock(0);
+    for (FiguraUI &f : s_figure) {
+        if (!f.box) continue;
+        lv_obj_clean(f.box);
+        fill_figura(f);
+    }
+    bsp_display_unlock();
+}
+
 static void render_card(lv_obj_t *parent, const cJSON *card, int w, int h)
 {
     std::string t = card_type(card);
@@ -2514,6 +4455,31 @@ static void render_card(lv_obj_t *parent, const cJSON *card, int w, int h)
     else if (t == "light")                       render_light(parent, card, w, h);
     else if (t == "thermostat")                  render_thermostat(parent, card, w, h);
     else if (t == "media-control")               render_media(parent, card, w, h);
+    else if (t == "clock")                       render_clock(parent, card, w, h);
+    else if (t == "alert")                       render_alert(parent, card, w, h);
+    else if (t == "toggle-group")                render_toggle_group(parent, card, w, h);
+    else if (t == "humidifier")                  render_humidifier(parent, card, w, h);
+    else if (t == "alarm-panel")                 render_alarm_panel(parent, card, w, h);
+    else if (t == "conditional" || t == "entity-filter") {
+        std::vector<std::string> guarda;
+        entita_delle_condizioni(cJSON_GetObjectItem(card, "conditions"), guarda);
+        entita_delle_condizioni(cJSON_GetObjectItem(card, "state_filter"), guarda);
+        const cJSON *row;
+        cJSON_ArrayForEach(row, cJSON_GetObjectItem(card, "entities")) {
+            const char *e = cJSON_IsString(row) ? row->valuestring : jstr(row, "entity");
+            if (e) guarda.push_back(e);
+        }
+        render_dyn(parent, card, t, w, h, guarda);
+    }
+    else if (is_energy_card(t))                  render_energy_card(parent, card, t, w, h);
+    else if (t == "statistic")                   render_statistic(parent, card, w, h);
+    else if (t == "todo-list")                   render_todo(parent, card, w, h);
+    else if (t == "shopping-list")               render_shopping(parent, card, w, h);
+    else if (t == "calendar")                    render_calendar(parent, card, w, h);
+    else if (t == "logbook")                     render_logbook(parent, card, w, h);
+    else if (t == "picture" || t == "picture-entity" ||
+             t == "picture-glance" || t == "picture-elements")
+                                                 render_figura(parent, card, t, w, h);
     else if (chart_card(card))                   render_chart(parent, card, w, h);
     else if (t == "vertical-stack")              render_stack(parent, card, w, false, 1);
     else if (t == "horizontal-stack")            render_stack(parent, card, w, true, 1);
@@ -2601,9 +4567,16 @@ static void build_panel(lv_obj_t *parent, int w)
     if (first) render_card(parent, first, w, 0);
 }
 
+void ll_energy_refresh(void)
+{
+    energy_model_invalida(true);
+    if (s_fetch_task) xTaskNotifyGive(s_fetch_task);
+}
+
 void ll_build(lv_obj_t *parent, int w)
 {
     ll_unbind();
+    web_image_on_arrivo(figure_aggiorna);
     if (!s_view) return;
     lv_obj_set_style_bg_color(parent, C_BG, 0);
     lv_obj_set_style_bg_opa(parent, LV_OPA_COVER, 0);
@@ -2628,7 +4601,23 @@ void ll_unbind(void)
         delete c;
     }
     s_wx.clear();
+    for (Orologio *o : s_orologi) { if (o->t) lv_timer_del(o->t); delete o; }
+    s_orologi.clear();
+    for (Gruppo *g : s_gruppi)  delete g;
+    s_gruppi.clear();
+    for (Umid *u : s_umid)      delete u;
+    s_umid.clear();
+    for (Allarme *a : s_allarmi) delete a;
+    s_allarmi.clear();
+    s_dyn.clear();
+    s_num.clear();
+    /* Gli elenchi si buttano qui. Una risposta che arriva dopo non trova piu'
+       il suo elenco fra quelli vivi e si ferma da sola. */
+    for (Elenco *e : s_elenchi) delete e;
+    s_elenchi.clear();
+    s_figure.clear();
     s_binds.clear();
+    s_encards.clear();          // i contenitori muoiono con la vista
     s_gauges.clear();
     s_luci.clear();
     s_termo.clear();
@@ -2728,6 +4717,16 @@ bool ll_set_config(const cJSON *config, int view, char *err, size_t err_sz)
     collect_charts(cJSON_GetObjectItem(s_view, "sections"));
     collect_charts(cJSON_GetObjectItem(s_view, "cards"));
     s_cdata.assign(s_cspec.size(), ChartData());
+
+    /* L'energia si accende solo se la vista la mostra davvero. */
+    bool en = cerca_energia(cJSON_GetObjectItem(s_view, "sections")) ||
+              cerca_energia(cJSON_GetObjectItem(s_view, "cards"));
+    energy_model_serve(en);
+    if (en) {
+        energy_model_on_change(energia_aggiorna);
+        energy_model_invalida(true);      // vista nuova: preferenze e dati da rileggere
+    }
+
     if (s_fetch_task) xTaskNotifyGive(s_fetch_task);
 
     s_ids.clear();
@@ -2780,6 +4779,11 @@ void ll_entity_update(const char *entity_id, const char *state, const cJSON *att
         if (cJSON_IsNumber(n = cJSON_GetObjectItem(attrs, "min_temp")))            e.temp_min = n->valuedouble;
         if (cJSON_IsNumber(n = cJSON_GetObjectItem(attrs, "max_temp")))            e.temp_max = n->valuedouble;
         if (cJSON_IsNumber(n = cJSON_GetObjectItem(attrs, "target_temp_step")))    e.temp_step = n->valuedouble;
+        if (cJSON_IsNumber(n = cJSON_GetObjectItem(attrs, "humidity")))            e.umidita_set = n->valuedouble;
+        if (cJSON_IsNumber(n = cJSON_GetObjectItem(attrs, "current_humidity")))    e.umidita_ora = n->valuedouble;
+        if (cJSON_IsNumber(n = cJSON_GetObjectItem(attrs, "min_humidity")))        e.umidita_min = n->valuedouble;
+        if (cJSON_IsNumber(n = cJSON_GetObjectItem(attrs, "max_humidity")))        e.umidita_max = n->valuedouble;
+        if ((s = jstr(attrs, "mode")))             e.modo = s;
         if (cJSON_IsNumber(n = cJSON_GetObjectItem(attrs, "volume_level")))        e.volume = n->valuedouble;
         if (cJSON_IsNumber(n = cJSON_GetObjectItem(attrs, "supported_features")))  e.funzioni = n->valueint;
         if ((s = jstr(attrs, "hvac_action")))      e.azione = s;
@@ -2790,4 +4794,11 @@ void ll_entity_update(const char *entity_id, const char *state, const cJSON *att
     }
     for (Bind &b : s_binds)
         if (b.eid == entity_id) refresh(b);
+    /* I gruppi contano piu' entita' insieme, quindi non hanno un bind proprio:
+       si rinfrescano tutti quelli che contengono questa. */
+    for (Gruppo *g : s_gruppi)
+        for (const std::string &e : g->eid)
+            if (e == entity_id) { gruppo_refresh(g); break; }
+    /* E le card che cambiano forma, non solo scritte. */
+    dyn_aggiorna(entity_id);
 }

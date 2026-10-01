@@ -105,10 +105,16 @@ static void who_event(void *arg, esp_event_base_t, int32_t id, void *data)
 
     if (!strcmp(t, "auth_required")) {
         xEventGroupSetBits(w->eg, BIT_CONN);
-        char *msg = (char *)malloc(strlen(w->token) + 48);
+        size_t n = strlen(w->token) + 48;
+        char *msg = (char *)malloc(n);
         if (msg) {
-            sprintf(msg, "{\"type\":\"auth\",\"access_token\":\"%s\"}", w->token);
+            snprintf(msg, n, "{\"type\":\"auth\",\"access_token\":\"%s\"}", w->token);
             esp_websocket_client_send_text(d->client, msg, strlen(msg), portMAX_DELAY);
+            /* Azzerato prima di restituirlo all'heap: dentro c'e' il permesso
+               di accesso a Home Assistant, e chi ricevesse dopo questo stesso
+               blocco se lo ritroverebbe scritto dentro. La stessa precauzione
+               c'e' in ha_ws.cpp per il messaggio gemello; qui mancava. */
+            memset(msg, 0, n);
             free(msg);
         }
     } else if (!strcmp(t, "auth_ok") && !w->sent_query) {

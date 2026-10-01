@@ -1,0 +1,6 @@
+# In ESP-IDF 6 il componente "json" (cJSON) e' stato tolto dal framework e
+# spostato nel registro: senza questa riga la compilazione si ferma su
+# "Failed to resolve component 'json'". Il gestore dei componenti la aggiunge
+# da sola ai requisiti di "apps", quindi da CMakeLists.txt "json" va tolto.
+dependencies:
+  espressif/cjson: "^1.7.19"

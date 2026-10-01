@@ -1,5 +1,6 @@
 #include "ha_http.h"
 #include "ha_config.h"
+#include "ha_token.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -88,4 +89,39 @@ int ha_http_post_form(const char *url, const char *body, char *resp, size_t resp
     }
     esp_http_client_cleanup(h);
     return status;
+}
+
+int ha_http_get_auth(const char *url, char *resp, size_t resp_sz)
+{
+    if (!url || !resp || resp_sz < 2) return -1;
+    resp[0] = 0;
+
+    char token[HA_TOKEN_MAX];
+    if (!ha_token_get_access(token, sizeof(token))) {
+        ESP_LOGW(TAG, "niente permesso: non posso chiedere %s", url);
+        return -1;
+    }
+    char bearer[HA_TOKEN_MAX + 16];
+    snprintf(bearer, sizeof(bearer), "Bearer %s", token);
+
+    esp_http_client_config_t cfg = {};
+    cfg.url = url;
+    cfg.method = HTTP_METHOD_GET;
+    cfg.timeout_ms = 8000;
+    esp_http_client_handle_t c = esp_http_client_init(&cfg);
+    if (!c) return -1;
+    esp_http_client_set_header(c, "Authorization", bearer);
+
+    int codice = -1;
+    if (esp_http_client_open(c, 0) == ESP_OK) {
+        esp_http_client_fetch_headers(c);
+        int n = esp_http_client_read_response(c, resp, (int)resp_sz - 1);
+        if (n >= 0) resp[n] = 0;
+        codice = esp_http_client_get_status_code(c);
+    }
+    esp_http_client_cleanup(c);
+    /* Il permesso non deve restare in giro in uno stack che verra' riusato. */
+    memset(bearer, 0, sizeof(bearer));
+    memset(token, 0, sizeof(token));
+    return codice;
 }

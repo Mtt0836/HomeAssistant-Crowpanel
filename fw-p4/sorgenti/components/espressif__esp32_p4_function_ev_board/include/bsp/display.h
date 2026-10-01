@@ -25,16 +25,19 @@
 
 /* LCD display color format */
 #if CONFIG_BSP_LCD_COLOR_FORMAT_RGB888
-#define BSP_LCD_COLOR_FORMAT        (ESP_LCD_COLOR_FORMAT_RGB888)
+#define BSP_LCD_COLOR_FORMAT        (LCD_COLOR_FMT_RGB888)
 #else
-#define BSP_LCD_COLOR_FORMAT        (ESP_LCD_COLOR_FORMAT_RGB565)
+#define BSP_LCD_COLOR_FORMAT        (LCD_COLOR_FMT_RGB565)
 #endif
 /* LCD display color bytes endianess */
 #define BSP_LCD_BIGENDIAN           (0)
 /* LCD display color bits */
 #define BSP_LCD_BITS_PER_PIXEL      (16)
 /* LCD display color space */
-#define BSP_LCD_COLOR_SPACE         (ESP_LCD_COLOR_SPACE_RGB)
+/* In ESP-IDF 6 i nomi dei colori dell'esp_lcd sono cambiati:
+   ESP_LCD_COLOR_FORMAT_* -> LCD_COLOR_FMT_*, e lo "spazio colore" e' diventato
+   l'ordine degli elementi, che e' quello che quel campo ha sempre voluto dire. */
+#define BSP_LCD_COLOR_SPACE         (LCD_RGB_ELEMENT_ORDER_RGB)
 
 #if CONFIG_BSP_LCD_TYPE_1024_600
 /* LCD display definition 1024x600 */

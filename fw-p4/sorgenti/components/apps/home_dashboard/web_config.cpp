@@ -10,8 +10,11 @@
 #include "standby_show.h"
 #include "idle_manager.h"
 #include "ha_plugin.h"
+#include "net_config.h"      // il nome di rete del pannello, per controllare l'intestazione Host
+#include "backup.h"
 
 #include <string.h>
+#include <strings.h>         // strcasecmp: i nomi di rete non badano alle maiuscole
 #include <stdlib.h>
 #include <sys/stat.h>
 #include "freertos/FreeRTOS.h"
@@ -585,6 +588,97 @@ static esp_err_t h_reload(httpd_req_t *r)
 
 // ------------------------------------------------------------------ avvio
 
+/* ---------------------------------------------------------------- salvataggio
+
+   Tre cose sole: prendere la chiave di recupero, scaricare la configurazione,
+   rimetterla. Tutte e tre da amministratore, perche' il salvataggio cifrato
+   contiene il permesso di entrare in Home Assistant e la chiave privata del
+   certificato: chi lo scarica si porta via le chiavi di casa. */
+
+static esp_err_t h_chiave(httpd_req_t *r)
+{
+    if (!allow(r, WEB_ROLE_ADMIN)) return ESP_OK;
+    char k[BACKUP_CHIAVE_MAX];
+    if (!backup_chiave_testo(k, sizeof(k)))
+        return httpd_resp_send_err(r, HTTPD_500_INTERNAL_SERVER_ERROR, "chiave");
+    backup_chiave_segna_presa();
+
+    /* Come file da salvare, non come pagina: una chiave di recupero letta a
+       schermo e poi dimenticata non ha protetto nessuno. */
+    char nome[96];
+    net_config_t nc;
+    net_config_load(&nc);
+    snprintf(nome, sizeof(nome), "attachment; filename=\"chiave-%s.txt\"",
+             nc.hostname[0] ? nc.hostname : "pannello");
+    httpd_resp_set_type(r, "text/plain; charset=utf-8");
+    httpd_resp_set_hdr(r, "Content-Disposition", nome);
+
+    char testo[BACKUP_CHIAVE_MAX + 420];
+    int n = snprintf(testo, sizeof(testo),
+        "Chiave di recupero del pannello %s\r\n\r\n"
+        "    %s\r\n\r\n"
+        "Serve per riaprire un salvataggio cifrato della configurazione.\r\n"
+        "Tienila da parte, fuori dal pannello: se il pannello si guasta o lo\r\n"
+        "azzeri, questa e' l'unica cosa che permette di rimettere tutto com'era.\r\n"
+        "Chi ha questa chiave e un salvataggio cifrato ha anche il permesso di\r\n"
+        "entrare nel tuo Home Assistant: trattala come una password.\r\n",
+        nc.hostname[0] ? nc.hostname : "pannello", k);
+    return httpd_resp_send(r, testo, n);
+}
+
+static esp_err_t h_backup_get(httpd_req_t *r)
+{
+    if (!allow(r, WEB_ROLE_ADMIN)) return ESP_OK;
+
+    bool cifrato = true;
+    char q[48];
+    if (httpd_req_get_url_query_str(r, q, sizeof(q)) == ESP_OK) {
+        char v[8];
+        if (httpd_query_key_value(q, "cifrato", v, sizeof(v)) == ESP_OK)
+            cifrato = !(v[0] == '0' || v[0] == 'n');
+    }
+
+    char *j = backup_esporta(cifrato);
+    if (!j) return httpd_resp_send_err(r, HTTPD_500_INTERNAL_SERVER_ERROR, "esportazione");
+
+    net_config_t nc;
+    net_config_load(&nc);
+    char nome[128];
+    snprintf(nome, sizeof(nome), "attachment; filename=\"%s-%s.json\"",
+             nc.hostname[0] ? nc.hostname : "pannello", cifrato ? "cifrato" : "chiaro");
+    httpd_resp_set_type(r, "application/json");
+    httpd_resp_set_hdr(r, "Content-Disposition", nome);
+    esp_err_t e = httpd_resp_send(r, j, strlen(j));
+    free(j);
+    return e;
+}
+
+static esp_err_t h_backup_post(httpd_req_t *r)
+{
+    if (!allow(r, WEB_ROLE_ADMIN)) return ESP_OK;
+    char *body = recv_body(r);
+    if (!body) return httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST, "body");
+
+    /* Il corpo e' {"file": <testo del salvataggio>, "chiave": "..."}: la
+       chiave si manda solo se il file viene da un altro pannello. */
+    cJSON *j = cJSON_Parse(body);
+    free(body);
+    if (!j) return httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST, "json");
+    const char *file   = jstr(j, "file");
+    const char *chiave = jstr(j, "chiave");
+
+    char msg[160] = "";
+    bool ok = file && backup_importa(file, chiave, msg, sizeof(msg));
+    if (!file) snprintf(msg, sizeof(msg), "Nessun file.");
+    cJSON_Delete(j);
+
+    cJSON *out = cJSON_CreateObject();
+    cJSON_AddBoolToObject(out, "ok", ok);
+    cJSON_AddStringToObject(out, "messaggio", msg);
+    if (!ok) httpd_resp_set_status(r, "400 Bad Request");
+    return send_json(r, out);
+}
+
 static const httpd_uri_t ROUTES[] = {
     {"/",              HTTP_GET,  h_page,        NULL},
     {"/setup",         HTTP_GET,  h_page,        NULL},
@@ -606,21 +700,66 @@ static const httpd_uri_t ROUTES[] = {
     {"/api/standby",   HTTP_GET,  h_get_standby, NULL},
     {"/api/standby",   HTTP_POST, h_post_standby,NULL},
     {"/api/standby/locale", HTTP_POST, h_standby_release, NULL},
+    {"/api/chiave",    HTTP_GET,  h_chiave,      NULL},
+    {"/api/backup",    HTTP_GET,  h_backup_get,  NULL},
+    {"/api/backup",    HTTP_POST, h_backup_post, NULL},
 };
+
+/* Il nostro indirizzo IP in forma di testo, stringa vuota se non ce l'abbiamo. */
+static void mio_ip(char *out, size_t sz)
+{
+    esp_netif_ip_info_t ip = {};
+    esp_netif_t *nif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    if (nif && esp_netif_get_ip_info(nif, &ip) == ESP_OK && ip.ip.addr)
+        snprintf(out, sz, IPSTR, IP2STR(&ip.ip));
+    else
+        out[0] = 0;
+}
+
+/* Questo nome porta davvero a noi?
+
+   L'intestazione "Host" la scrive chi chiama, non il pannello: riscriverla
+   dentro "Location" senza guardarla vuol dire lasciare che un estraneo si
+   faccia emettere dal pannello un rimando verso dove gli pare. Si accettano
+   soltanto i tre nomi con cui si arriva davvero qui: il nostro indirizzo IP,
+   il nostro nome di rete e lo stesso nome con .local (quello che risponde a
+   mDNS). Qualunque altra cosa viene ignorata e si rimanda all'IP. */
+static bool nome_nostro(const char *host)
+{
+    if (!host || !host[0]) return false;
+
+    char ip[16];
+    mio_ip(ip, sizeof(ip));
+    if (ip[0] && !strcmp(host, ip)) return true;
+
+    net_config_t nc;
+    net_config_load(&nc);
+    const char *nome = nc.hostname[0] ? nc.hostname : "pannello";
+    if (!strcasecmp(host, nome)) return true;
+
+    char locale[sizeof(nc.hostname) + 8];
+    snprintf(locale, sizeof(locale), "%s.local", nome);
+    return strcasecmp(host, locale) == 0;
+}
 
 /* Chi arriva in chiaro sulla porta 80 viene mandato all'indirizzo sicuro. */
 static esp_err_t h_redirect(httpd_req_t *r)
 {
     char host[80] = "";
-    size_t n = sizeof(host);
-    if (httpd_req_get_hdr_value_str(r, "Host", host, n) != ESP_OK) {
-        esp_netif_ip_info_t ip = {};
-        esp_netif_t *nif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-        if (nif) esp_netif_get_ip_info(nif, &ip);
-        snprintf(host, sizeof(host), IPSTR, IP2STR(&ip.ip));
-    }
+    if (httpd_req_get_hdr_value_str(r, "Host", host, sizeof(host)) != ESP_OK)
+        host[0] = 0;
+
     char *colon = strchr(host, ':');
     if (colon) *colon = 0;                     // via la porta 80
+
+    if (!nome_nostro(host)) {
+        /* Nome sconosciuto (o assente): si rimanda al nostro indirizzo, che e'
+           l'unica cosa che sappiamo per certo essere noi. */
+        mio_ip(host, sizeof(host));
+        if (!host[0]) return httpd_resp_send_err(r, HTTPD_500_INTERNAL_SERVER_ERROR,
+                                                 "Il pannello non ha ancora un indirizzo.");
+    }
+
     char loc[128];
     snprintf(loc, sizeof(loc), "https://%s/", host);
     httpd_resp_set_status(r, "301 Moved Permanently");

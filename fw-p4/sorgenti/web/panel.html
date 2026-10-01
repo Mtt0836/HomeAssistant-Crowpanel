@@ -154,6 +154,7 @@
       <button id="tab-slide" hidden onclick="showTab('slide')">Slideshow</button>
       <button id="tab-ha"   hidden onclick="showTab('ha')">Home Assistant</button>
       <button id="tab-acc"  hidden onclick="showTab('acc')">Accessi</button>
+      <button id="tab-bak"  hidden onclick="showTab('bak')">Salvataggio</button>
     </div>
 
     <div id="pane-dash">
@@ -251,6 +252,54 @@
            a Home Assistant, non cambia le password e non tocca la rete.</p>
       </div></div>
     </div>
+
+    <div id="pane-bak" hidden>
+      <div class="card"><h2>Chiave di recupero</h2><div class="body">
+        <p class="hint">Serve per riaprire un salvataggio cifrato. Il pannello ne
+           ha una sola, nata al primo avvio, e non cambia mai: se cambiasse, i
+           salvataggi fatti prima diventerebbero illeggibili.</p>
+        <p class="hint"><strong>Scaricala e mettila da parte, fuori dal pannello.</strong>
+           Se il pannello si guasta o lo azzeri, e&rsquo; l&rsquo;unica cosa che
+           permette di rimettere tutto com&rsquo;era. Chi ha la chiave e un
+           salvataggio cifrato entra anche nel tuo Home Assistant: trattala come
+           una password.</p>
+        <p><button class="primary" onclick="scaricaChiave()">Scarica la chiave</button></p>
+        <p class="hint" id="bak-chiave-stato"></p>
+      </div></div>
+
+      <div class="card"><h2>Salva la configurazione</h2><div class="body">
+        <p class="hint">Dentro c&rsquo;e&rsquo; tutto quello che rende questo
+           pannello <em>questo</em> pannello: Home Assistant e il permesso per
+           entrarci, la dashboard, le password, il PIN, la rete, il certificato,
+           i ritocchi alle card e lo slideshow.</p>
+        <p>
+          <button class="primary" onclick="scaricaBackup(true)">Scarica cifrato</button>
+          <button onclick="scaricaBackup(false)">Scarica in chiaro</button>
+        </p>
+        <p class="hint"><strong>Cifrato</strong>: c&rsquo;e&rsquo; dentro tutto,
+           e per riaprirlo serve la chiave di recupero. E&rsquo; questo che
+           rimette in piedi un pannello da zero.<br>
+           <strong>In chiaro</strong>: si legge con un editor di testo, ma
+           <em>senza</em> le cose segrete &mdash; il permesso di Home Assistant,
+           la chiave privata del certificato, le impronte di password e PIN. Nel
+           file c&rsquo;e&rsquo; scritto cosa manca. Un permesso di Home
+           Assistant scritto in chiaro in un file che gira per posta o finisce
+           in un archivio apre la casa a chiunque lo legga.</p>
+      </div></div>
+
+      <div class="card"><h2>Rimetti una configurazione</h2><div class="body">
+        <label for="bak-file">File del salvataggio</label>
+        <input id="bak-file" type="file" accept=".json,application/json">
+        <label for="bak-key">Chiave di recupero</label>
+        <input id="bak-key" placeholder="solo se il file viene da un altro pannello">
+        <p class="hint">Se il file e&rsquo; stato fatto da <em>questo</em>
+           pannello, la casella si lascia vuota: la chiave ce l&rsquo;ha gia&rsquo;.</p>
+        <p><button class="primary" onclick="rimetti()">Rimetti</button></p>
+        <p class="hint" id="bak-esito"></p>
+        <p class="hint">Dopo il ripristino il pannello va riavviato. Se hai
+           rimesso anche le password, rientrerai con quelle del salvataggio.</p>
+      </div></div>
+    </div>
   </section>
 </main>
 <footer id="foot"></footer>
@@ -301,6 +350,7 @@ async function session() {
   $('tab-ha').hidden = state.role !== 'admin';
   $('tab-acc').hidden = state.role !== 'admin';
   $('tab-slide').hidden = state.role !== 'admin';
+  $('tab-bak').hidden   = state.role !== 'admin';
   if (logged) {
     load();
     if (state.role === 'admin') { loadHA(); guestState(); }
@@ -314,7 +364,15 @@ async function doSetup() {
   try {
     await api('/api/setup', { method: 'POST', body: JSON.stringify({ password: a }) });
     say('Password creata.', 'ok');
-    session();
+    await session();
+    /* Appena il pannello e' suo, la prima cosa che gli si mette davanti e' la
+       chiave di recupero. E' l'unico momento in cui si e' sicuri che stia
+       guardando: dopo, finche' non serve, nessuno va a cercarla - e quando
+       serve e' troppo tardi per andarla a prendere da un pannello guasto. */
+    showTab('bak');
+    $('bak-chiave-stato').textContent =
+      'Non e’ ancora stata scaricata. Falla adesso: e’ l’unica cosa che ' +
+      'permette di riaprire un salvataggio cifrato se il pannello si guasta.';
   } catch (e) { say(e.message, 'err'); }
 }
 
@@ -332,8 +390,55 @@ async function logout() {
   location.reload();
 }
 
+// ------------------------------------------------------- salvataggio
+
+/* Il download passa da un <a> costruito al volo invece che da fetch: cosi' il
+   browser usa il nome che il pannello scrive in Content-Disposition e lo
+   salva come farebbe con qualunque altro file. */
+function scarica(url) {
+  const a = document.createElement('a');
+  a.href = url;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+function scaricaChiave() {
+  scarica('/api/chiave');
+  $('bak-chiave-stato').textContent =
+    'Chiave scaricata. Mettila al sicuro adesso, fuori da questo pannello.';
+}
+
+function scaricaBackup(cifrato) {
+  scarica('/api/backup?cifrato=' + (cifrato ? '1' : '0'));
+}
+
+async function rimetti() {
+  const f = $('bak-file').files[0];
+  const esito = $('bak-esito');
+  if (!f) { esito.textContent = 'Scegli prima il file.'; return; }
+  esito.textContent = 'Leggo il file...';
+  let testo;
+  try { testo = await f.text(); }
+  catch (e) { esito.textContent = 'Non riesco a leggere il file.'; return; }
+
+  esito.textContent = 'Rimetto la configurazione...';
+  try {
+    const r = await fetch('/api/backup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ file: testo, chiave: $('bak-key').value.trim() })
+    });
+    const j = await r.json();
+    esito.textContent = j.messaggio || (j.ok ? 'Fatto.' : 'Non riuscito.');
+    if (j.ok) $('bak-key').value = '';
+  } catch (e) {
+    esito.textContent = 'Il pannello non ha risposto.';
+  }
+}
+
 function showTab(which) {
-  for (const t of ['dash', 'slide', 'ha', 'acc']) {
+  for (const t of ['dash', 'slide', 'ha', 'acc', 'bak']) {
     $('pane-' + t).hidden = t !== which;
     $('tab-' + t).classList.toggle('on', t === which);
   }

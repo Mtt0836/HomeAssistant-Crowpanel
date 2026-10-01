@@ -1,0 +1,7 @@
+La partizione "storage" del pannello viene costruita da questa cartella, che
+in partenza e' vuota: /spiffs/standby.json lo scrive il pannello stesso la
+prima volta che si salva la configurazione dello slideshow.
+
+Il file serve solo a far esistere la cartella in git, che le cartelle vuote
+non le tiene. Senza, la compilazione si ferma su "given base directory
+.../spiffs does not exist".

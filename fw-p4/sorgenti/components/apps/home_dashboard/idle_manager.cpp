@@ -70,7 +70,13 @@ static void idle_task(void *arg)
 
     while (true) {
         vTaskDelay(pdMS_TO_TICKS(200));
+        /* Anche solo leggere si fa col lock preso. In pratica qui si legge un
+           intero allineato e non e' mai andata storta, ma la regola di LVGL non
+           distingue fra letture e scritture: l'eccezione tollerata e' quella
+           che un domani qualcuno allarga. */
+        bsp_display_lock(0);
         const uint32_t idle_ms = lv_disp_get_inactive_time(NULL);
+        bsp_display_unlock();
         const int64_t now = esp_timer_get_time();
 
         if (s_req_reload) {

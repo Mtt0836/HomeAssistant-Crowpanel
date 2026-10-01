@@ -3,10 +3,12 @@
 #include "ha_token.h"
 #include "avviso_ui.h"
 #include <string.h>
+#include <strings.h>      // strncasecmp: l'indirizzo si confronta senza badare alle maiuscole
 #include <stdio.h>
 #include <stdlib.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "esp_err.h"
 #include "esp_log.h"
 #include "esp_http_client.h"
 #include "cJSON.h"
@@ -83,9 +85,34 @@ static void tts_task(void *arg)
     const char *audio_url = au->valuestring;
     const char *ext = strstr(audio_url,".mp3") ? ".mp3" : ".wav";
     char outpath[64]; snprintf(outpath,sizeof(outpath),"%s%s",TTS_OUT_PATH,ext);
-    esp_http_client_config_t dc = {}; dc.url=audio_url;
+
+    /* L'indirizzo dell'audio lo decide Home Assistant, e puo' arrivare
+       relativo ("/api/tts_proxy/...") o assoluto. Se e' relativo va attaccato
+       alla base, altrimenti esp_http_client non saprebbe nemmeno a chi
+       chiedere.
+
+       Il permesso di accesso invece si manda SOLO se l'indirizzo resta dentro
+       Home Assistant. Un indirizzo che punta altrove lo si scarica lo stesso -
+       non c'e' motivo di rifiutarlo - ma allegarci anche il nostro permesso
+       vorrebbe dire consegnare a un estraneo le chiavi di casa, e quel permesso
+       apre tutto Home Assistant. */
+    char scarica[HA_URL_MAX * 2];
+    bool nostro;
+    if (audio_url[0] == '/') {
+        snprintf(scarica, sizeof(scarica), "%s%s", base, audio_url);
+        nostro = true;
+    } else {
+        snprintf(scarica, sizeof(scarica), "%s", audio_url);
+        size_t nb = strlen(base);
+        nostro = strncasecmp(scarica, base, nb) == 0 &&
+                 (scarica[nb] == 0 || scarica[nb] == '/' || scarica[nb] == '?');
+    }
+    if (!nostro)
+        ESP_LOGW(TAG, "l'audio non sta su Home Assistant: lo scarico senza mandare il permesso");
+
+    esp_http_client_config_t dc = {}; dc.url=scarica;
     esp_http_client_handle_t dh = esp_http_client_init(&dc);
-    esp_http_client_set_header(dh,"Authorization",bearer);   // url puo' essere relativo/assoluto
+    if (nostro) esp_http_client_set_header(dh,"Authorization",bearer);
     FILE *of=fopen(outpath,"wb");
     if (of && esp_http_client_open(dh,0)==ESP_OK) {
         esp_http_client_fetch_headers(dh);
@@ -97,9 +124,28 @@ static void tts_task(void *arg)
     cJSON_Delete(root); free(message);
 
     // 3) riproduci (stesso motore audio del music player del factory)
-    FILE *pf=fopen(outpath,"rb");
-    if (pf) { audio_player_play(pf); }   // il player chiude il file a fine riproduzione
-    ESP_LOGI(TAG,"tts riprodotto: %s",outpath);
+    FILE *pf = fopen(outpath, "rb");
+    if (!pf) {
+        ESP_LOGE(TAG, "non riesco a riaprire %s", outpath);
+        vTaskDelete(NULL);
+        return;
+    }
+    /* Il player si prende in carico il file - e lo chiude a fine riproduzione -
+       SOLO se accetta la richiesta. La sua intestazione lo dice chiaro: "If not
+       ESP_OK returned then should be fclose()d by the caller".
+
+       Senza questo controllo ogni riproduzione rifiutata (coda piena, player
+       non avviato, formato non riconosciuto) lasciava un descrittore aperto per
+       sempre. Sono pochi, e quando finiscono non si ferma solo la voce: smette
+       di funzionare anche la lettura della scheda SD, quindi lo slideshow. Un
+       guasto che sarebbe saltato fuori lontanissimo dalla sua causa. */
+    esp_err_t pe = audio_player_play(pf);
+    if (pe != ESP_OK) {
+        fclose(pf);
+        ESP_LOGE(TAG, "riproduzione rifiutata (%s): %s", esp_err_to_name(pe), outpath);
+    } else {
+        ESP_LOGI(TAG, "tts riprodotto: %s", outpath);
+    }
     vTaskDelete(NULL);
 }
 
@@ -114,5 +160,12 @@ void tts_player_say(const char *msg)
 {
     if (!msg || !*msg) return;
     char *copy = strdup(msg);
-    xTaskCreate(tts_task,"tts",6144,copy,4,NULL);
+    if (!copy) return;
+    /* La copia la libera il task appena creato, in tutte le sue vie d'uscita.
+       Ma se il task non nasce nessuno la liberera' mai: qui ci pensa chi ha
+       chiamato. */
+    if (xTaskCreate(tts_task, "tts", 6144, copy, 4, NULL) != pdPASS) {
+        ESP_LOGE(TAG, "niente memoria per il task della voce");
+        free(copy);
+    }
 }

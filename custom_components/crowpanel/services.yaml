@@ -67,3 +67,128 @@ invia_slideshow:
       example: a0f262854468
       selector:
         text:
+
+salva_configurazione:
+  name: Salva la configurazione
+  description: >-
+    Chiede al pannello un salvataggio completo della sua configurazione e
+    restituisce un indirizzo da cui scaricarlo. Il collegamento vale una volta
+    sola e per pochi minuti; il file non resta in Home Assistant.
+  fields:
+    pannello:
+      name: Pannello
+      description: Identificativo del pannello.
+      required: true
+      example: a1b2c3d4
+      selector:
+        text:
+    cifrato:
+      name: Cifrato
+      description: >-
+        Acceso (consigliato): il salvataggio contiene tutto, permesso di Home
+        Assistant e certificato compresi, e per riaprirlo serve la chiave di
+        recupero del pannello. Spento: si legge con un editor di testo ma le
+        cose segrete NON ci sono, e non basta per rimettere in piedi un
+        pannello da zero.
+      default: true
+      selector:
+        boolean:
+
+scarica_chiave:
+  name: Scarica la chiave di recupero
+  description: >-
+    Restituisce un indirizzo da cui scaricare la chiave che riapre i
+    salvataggi cifrati del pannello. Tienila fuori dal pannello e fuori da
+    Home Assistant: chi ha la chiave e un salvataggio cifrato entra anche nel
+    tuo Home Assistant.
+  fields:
+    pannello:
+      name: Pannello
+      description: Identificativo del pannello.
+      required: true
+      example: a1b2c3d4
+      selector:
+        text:
+
+rimetti_configurazione:
+  name: Rimetti una configurazione
+  description: >-
+    Manda al pannello un salvataggio da rimettere. Se il file e' valido il
+    pannello si riavvia da solo per applicarlo.
+  fields:
+    pannello:
+      name: Pannello
+      description: Identificativo del pannello.
+      required: true
+      example: a1b2c3d4
+      selector:
+        text:
+    file:
+      name: File del salvataggio
+      description: Il contenuto del file, incollato per intero.
+      required: true
+      selector:
+        text:
+          multiline: true
+    chiave:
+      name: Chiave di recupero
+      description: >-
+        Serve solo se il salvataggio viene da un altro pannello. Se e' stato
+        fatto da questo, lascia vuoto: la chiave ce l'ha gia'.
+      selector:
+        text:
+
+invia_foto:
+  name: Manda una foto al pannello
+  description: >-
+    Converte la foto - la rimpicciolisce a misura di schermo, la raddrizza
+    secondo l'orientamento della fotocamera e la salva in JPEG - e la manda al
+    pannello, che la mette fra quelle dello slideshow. La conversione la fa
+    Home Assistant perche' il pannello non ha memoria per ridimensionare una
+    foto da telefono: senza, verrebbe saltata a ogni giro.
+  fields:
+    pannello:
+      name: Pannello
+      description: Identificativo del pannello.
+      required: true
+      example: a1b2c3d4
+      selector:
+        text:
+    file:
+      name: File
+      description: >-
+        Percorso della foto sul computer di Home Assistant. La sua cartella
+        deve essere fra quelle permesse (allowlist_external_dirs).
+      required: true
+      example: /media/foto/vacanza.jpg
+      selector:
+        text:
+    nome:
+      name: Nome sul pannello
+      description: Come chiamarla sul pannello. Senza, si usa quello del file.
+      example: vacanza
+      selector:
+        text:
+
+elimina_foto:
+  name: Togli una foto dal pannello
+  description: Cancella una foto dello slideshow, o tutte.
+  fields:
+    pannello:
+      name: Pannello
+      description: Identificativo del pannello.
+      required: true
+      example: a1b2c3d4
+      selector:
+        text:
+    nome:
+      name: Nome della foto
+      description: Il nome che ha sul pannello, estensione compresa.
+      example: vacanza.jpg
+      selector:
+        text:
+    tutte:
+      name: Tutte
+      description: Cancella tutte le foto. Non si torna indietro.
+      selector:
+        boolean:

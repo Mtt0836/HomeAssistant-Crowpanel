@@ -1,7 +1,11 @@
 dependencies:
   esp_codec_dev:
     public: true
-    version: 1.2.*
+    # La 1.2 si aspettava che il vecchio componente "driver" le portasse dentro
+    # gpio, i2c, spi e i2s. In ESP-IDF 6 non lo fa piu', e la 1.2 non compila:
+    # "fatal error: driver/gpio.h: No such file or directory". La 1.6 li chiede
+    # per conto suo.
+    version: "^1.6"
   esp_lcd_ek79007: 1.*
   esp_lcd_ili9881c: 1.*
   esp_lcd_touch_gt911: ^1
@@ -9,6 +13,11 @@ dependencies:
     public: true
     version: ^2
   idf: '>=5.3'
+  # In ESP-IDF 6 il livello USB host non fa piu' parte del framework: e' stato
+  # spostato nel registro dei componenti. Il BSP lo richiede (bsp_usb_host_start),
+  # anche se questo progetto non lo usa, quindi va dichiarato qui o la
+  # compilazione si ferma su "Failed to resolve component 'usb'".
+  espressif/usb: '^1.5'
   lvgl/lvgl: '>=8,<10'
 description: Board Support Package (BSP) for ESP32-P4 Function EV Board (preview)
 repository: git://github.com/espressif/esp-bsp.git

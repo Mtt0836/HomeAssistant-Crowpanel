@@ -6,5 +6,10 @@ idf_component_register(
     INCLUDE_DIRS "include"
     PRIV_INCLUDE_DIRS "priv_include"
     REQUIRES driver
+    # Dalla 6.0 il componente "driver" non porta piu' dentro i driver dei
+    # singoli periferici: questo BSP usa ledc (retroilluminazione), i2s e
+    # i2s_pdm (audio e microfono), uart e sdmmc, e se li deve chiedere.
     PRIV_REQUIRES esp_lcd usb spiffs fatfs
+                  esp_driver_ledc esp_driver_i2s esp_driver_uart
+                  esp_driver_sdmmc esp_driver_gpio esp_driver_i2c
 )

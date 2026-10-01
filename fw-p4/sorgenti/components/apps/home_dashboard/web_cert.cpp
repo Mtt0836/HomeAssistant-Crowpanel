@@ -10,14 +10,22 @@
 #include "esp_heap_caps.h"
 #include "nvs.h"
 
+/* ESP-IDF 6 porta mbedTLS 4, e qui si sente piu' che altrove.
+
+   Quattro delle intestazioni che serviva includere prima sono diventate
+   private: ecp.h, entropy.h, ctr_drbg.h e sha256.h stanno sotto
+   mbedtls/private/ e non si possono piu' usare da fuori. Quello che facevano
+   lo fanno adesso le PSA Crypto API, che sono il modo nuovo e unico di
+   chiedere crittografia a mbedTLS.
+
+   La parte grossa, invece, e' rimasta: pk.h, x509_crt.h e oid.h sono ancora
+   pubbliche, quindi il certificato si scrive esattamente come prima. Cambiano
+   solo due cose - da dove arriva la casualita' e come nasce la chiave - e
+   sono proprio quelle che stavano dietro le intestazioni scomparse. */
 #include "mbedtls/pk.h"
-#include "mbedtls/ecp.h"
-#include "mbedtls/entropy.h"
-#include "mbedtls/ctr_drbg.h"
 #include "mbedtls/x509_crt.h"
-#include "mbedtls/x509_csr.h"
-#include "mbedtls/sha256.h"
 #include "mbedtls/oid.h"
+#include "psa/crypto.h"
 
 static const char *TAG = "web_cert";
 
@@ -44,29 +52,67 @@ static void current_ip(char *out, size_t sz)
 
 // ------------------------------------------------------------------ generazione
 
+/* La chiave privata del pannello: si fa nascere in PSA e poi si copia qui.
+
+   mbedtls_pk_setup() + mbedtls_ecp_gen_key() non esistono piu'. Il giro nuovo
+   e' psa_generate_key() e poi mbedtls_pk_copy_from_psa(). E' "copy" e non
+   "wrap" per un motivo preciso: dopo la copia il contesto pk contiene la sua
+   chiave ed e' indipendente, e da li' si puo' tirare fuori il PEM da salvare
+   nella memoria del pannello. Una chiave soltanto "avvolta" resterebbe dentro
+   PSA e non si potrebbe scrivere.
+
+   Da questo viene anche PSA_KEY_USAGE_EXPORT: senza quel permesso la copia
+   non e' consentita, e la chiave non uscirebbe mai. Vive lo spazio di due
+   righe - il tempo di diventare PEM - e poi la si butta via da PSA.
+
+   La curva e' la stessa di prima, secp256r1: il certificato e la chiave gia'
+   salvati nella memoria continuano a valere e il pannello non rigenera
+   niente. */
+static bool genera_chiave(mbedtls_pk_context *key)
+{
+    psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
+    psa_set_key_type(&attr, PSA_KEY_TYPE_ECC_KEY_PAIR(PSA_ECC_FAMILY_SECP_R1));
+    psa_set_key_bits(&attr, 256);
+    psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_SIGN_HASH | PSA_KEY_USAGE_EXPORT);
+    psa_set_key_algorithm(&attr, PSA_ALG_ECDSA(PSA_ALG_SHA_256));
+
+    mbedtls_svc_key_id_t kid = MBEDTLS_SVC_KEY_ID_INIT;
+    psa_status_t st = psa_generate_key(&attr, &kid);
+    if (st != PSA_SUCCESS) {
+        ESP_LOGE(TAG, "psa_generate_key: %d", (int)st);
+        return false;
+    }
+
+    int e = mbedtls_pk_copy_from_psa(kid, key);
+    psa_destroy_key(kid);
+    if (e != 0) {
+        ESP_LOGE(TAG, "pk_copy_from_psa: -0x%04x", (unsigned)-e);
+        return false;
+    }
+    return true;
+}
+
 static bool generate(const char *host, const char *ip, char **cert_out, size_t *cert_len,
                      char **key_out, size_t *key_len)
 {
     int ret = -1;
     mbedtls_pk_context key;
-    mbedtls_entropy_context entropy;
-    mbedtls_ctr_drbg_context ctr;
     mbedtls_x509write_cert crt;
     char *cert_pem = NULL, *key_pem = NULL;
     char subject[128];
 
     mbedtls_pk_init(&key);
-    mbedtls_entropy_init(&entropy);
-    mbedtls_ctr_drbg_init(&ctr);
     mbedtls_x509write_crt_init(&crt);
 
-    const char *seed = "pannello-ha-cert";
-    if (mbedtls_ctr_drbg_seed(&ctr, mbedtls_entropy_func, &entropy,
-                              (const unsigned char *)seed, strlen(seed)) != 0) goto done;
+    /* Va chiamata prima di qualunque altra psa_*. E' innocua se qualcun altro
+       l'ha gia' fatta: la seconda volta non fa niente e risponde bene. */
+    if (psa_crypto_init() != PSA_SUCCESS) goto done;
 
-    if (mbedtls_pk_setup(&key, mbedtls_pk_info_from_type(MBEDTLS_PK_ECKEY)) != 0) goto done;
-    if (mbedtls_ecp_gen_key(MBEDTLS_ECP_DP_SECP256R1, mbedtls_pk_ec(key),
-                            mbedtls_ctr_drbg_random, &ctr) != 0) goto done;
+    /* Il seme e il generatore non si preparano piu' a mano. Prima si mescolava
+       una stringa fissa con l'entropia di mbedTLS per avviare un CTR-DRBG;
+       adesso ci pensa PSA, che sull'ESP32-P4 pesca dal generatore casuale
+       hardware. Meno righe, e una casualita' di partenza migliore. */
+    if (!genera_chiave(&key)) goto done;
 
     snprintf(subject, sizeof(subject), "CN=%s,O=Pannello Home Assistant", host);
     mbedtls_x509write_crt_set_subject_key(&crt, &key);
@@ -84,7 +130,7 @@ static bool generate(const char *host, const char *ip, char **cert_out, size_t *
 
     {   // numero di serie casuale
         unsigned char sn[16];
-        mbedtls_ctr_drbg_random(&ctr, sn, sizeof(sn));
+        if (psa_generate_random(sn, sizeof(sn)) != PSA_SUCCESS) goto done;
         sn[0] &= 0x7f;                       // deve restare positivo
         if (mbedtls_x509write_crt_set_serial_raw(&crt, sn, sizeof(sn)) != 0) goto done;
     }
@@ -118,8 +164,9 @@ static bool generate(const char *host, const char *ip, char **cert_out, size_t *
         if (!cert_pem || !key_pem) goto done;
 
         int64_t t0 = esp_timer_get_time();
-        if (mbedtls_x509write_crt_pem(&crt, (unsigned char *)cert_pem, CERT_BUF,
-                                      mbedtls_ctr_drbg_random, &ctr) != 0) goto done;
+        /* Due parametri in meno: in mbedTLS 4 questa funzione non si fa piu'
+           passare il generatore casuale, se lo prende da PSA per conto suo. */
+        if (mbedtls_x509write_crt_pem(&crt, (unsigned char *)cert_pem, CERT_BUF) != 0) goto done;
         if (mbedtls_pk_write_key_pem(&key, (unsigned char *)key_pem, KEY_BUF) != 0) goto done;
         ESP_LOGI(TAG, "certificato generato per %s / %s in %d ms", host, ip,
                  (int)((esp_timer_get_time() - t0) / 1000));
@@ -134,8 +181,6 @@ done:
     free(cert_pem);
     free(key_pem);
     mbedtls_x509write_crt_free(&crt);
-    mbedtls_ctr_drbg_free(&ctr);
-    mbedtls_entropy_free(&entropy);
     mbedtls_pk_free(&key);
     if (ret) ESP_LOGE(TAG, "generazione del certificato non riuscita");
     return ret == 0;
@@ -207,8 +252,15 @@ void web_cert_fingerprint(char *out, size_t out_sz)
     mbedtls_x509_crt crt;
     mbedtls_x509_crt_init(&crt);
     if (mbedtls_x509_crt_parse(&crt, (const unsigned char *)s_cert, s_cert_len) == 0) {
+        /* mbedtls_sha256() stava in sha256.h, ora privata: lo stesso conto si
+           chiede a PSA. L'impronta resta lo SHA-256 del certificato in forma
+           grezza, quindi quella che mostra il browser non cambia. */
         unsigned char sha[32];
-        if (mbedtls_sha256(crt.raw.p, crt.raw.len, sha, 0) == 0) {
+        size_t quanti = 0;
+        if (psa_crypto_init() == PSA_SUCCESS &&
+            psa_hash_compute(PSA_ALG_SHA_256, crt.raw.p, crt.raw.len,
+                             sha, sizeof(sha), &quanti) == PSA_SUCCESS &&
+            quanti == sizeof(sha)) {
             size_t pos = 0;
             for (int i = 0; i < 32 && pos + 3 < out_sz; i++)
                 pos += snprintf(out + pos, out_sz - pos, i ? ":%02X" : "%02X", sha[i]);

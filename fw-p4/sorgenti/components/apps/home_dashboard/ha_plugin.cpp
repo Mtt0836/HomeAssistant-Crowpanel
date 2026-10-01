@@ -1,6 +1,9 @@
 #include "ha_plugin.h"
 #include "ha_ws.h"
 #include "ha_config.h"
+#include "backup.h"
+#include "json_escape.h"
+#include "web_image.h"
 #include "net_config.h"
 #include "standby_show.h"
 #include "idle_manager.h"
@@ -11,6 +14,9 @@
 #include <string>
 #include <string.h>
 #include <stdio.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <unistd.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
@@ -288,6 +294,115 @@ static void reconnect_task(void *arg)
     vTaskDelete(NULL);
 }
 
+/* La via di ritorno del salvataggio verso Home Assistant.
+
+   Il pannello e HA si parlano in un verso solo: HA manda eventi sul bus, il
+   pannello manda comandi WebSocket. Per far tornare indietro un file serviva
+   quindi un comando nuovo, "crowpanel/backup", e non una risposta - perche'
+   l'evento che l'ha chiesto non ne ha una.
+
+   Il lavoro si fa in un task suo: esportare vuol dire percorrere tutta la
+   memoria NVS, e farlo dentro la gestione di un evento terrebbe fermo il
+   filo del WebSocket per il tempo che ci vuole. */
+struct LavoroBackup {
+    bool chiave;          // true = manda la chiave di recupero, non il file
+    bool cifrato;
+    std::string richiesta;
+};
+
+static void manda_backup_task(void *arg)
+{
+    LavoroBackup *l = (LavoroBackup *)arg;
+    char id[16];
+    ha_plugin_id(id, sizeof(id));
+
+    std::string tipo, contenuto;
+    if (l->chiave) {
+        char k[BACKUP_CHIAVE_MAX];
+        if (backup_chiave_testo(k, sizeof(k))) { tipo = "chiave"; contenuto = k; }
+        backup_chiave_segna_presa();
+    } else {
+        char *j = backup_esporta(l->cifrato);
+        if (j) { tipo = l->cifrato ? "cifrato" : "chiaro"; contenuto = j; free(j); }
+    }
+
+    if (tipo.empty()) {
+        ESP_LOGE(TAG, "salvataggio per Home Assistant non riuscito");
+    } else {
+        /* Il contenuto va scritto come stringa JSON: dentro c'e' altro JSON,
+           pieno di virgolette che vanno protette. */
+        std::string esc = json_escape(contenuto.c_str());
+        std::string body = std::string("\"type\":\"crowpanel/backup\",\"pannello\":\"") + id +
+                           "\",\"richiesta\":\"" + l->richiesta +
+                           "\",\"tipo\":\"" + tipo +
+                           /* json_escape mette gia' le virgolette: aggiungerne
+                              altre faceva un "dati":""...""  che Home Assistant
+                              scartava senza dire niente. */
+                           "\",\"dati\":" + esc;
+        ha_ws_request(body.c_str(), NULL, NULL);
+        ESP_LOGI(TAG, "mandato a Home Assistant: %s (%u byte)",
+                 tipo.c_str(), (unsigned)contenuto.size());
+    }
+    delete l;
+    vTaskDelete(NULL);
+}
+
+static void avvia_backup(bool chiave, bool cifrato, const char *richiesta)
+{
+    LavoroBackup *l = new LavoroBackup();
+    l->chiave = chiave;
+    l->cifrato = cifrato;
+    l->richiesta = richiesta ? richiesta : "";
+    /* Lo stack e' largo: dentro ci girano la lettura della NVS, cJSON e la
+       cifratura, e il file finito puo' arrivare a diversi kilobyte. */
+    if (xTaskCreate(manda_backup_task, "ha_backup", 12288, l, 4, NULL) != pdPASS) {
+        ESP_LOGE(TAG, "niente memoria per preparare il salvataggio");
+        delete l;
+    }
+}
+
+/* ---- le foto dello slideshow ----
+
+   Home Assistant le converte prima di mandarle - le rimpicciolisce a misura
+   di schermo e le salva in JPEG - e poi dice al pannello di andarsele a
+   prendere. Non le manda dentro l'evento: una foto da duecento kilobyte
+   scritta in base64 sul bus degli eventi e' esattamente la raffica che il
+   collegamento SDIO verso il C6 regge peggio. Cosi' invece passa da HTTP, a
+   pezzi, come tutto il resto del traffico grosso.
+
+   La cartella e' quella che lo slideshow guarda gia'. */
+#define CARTELLA_FOTO "/sdcard/foto"
+
+struct LavoroFoto { std::string url, nome; };
+
+/* Un nome di file che non possa uscire dalla cartella.
+
+   Il nome arriva da fuori, e un nome come "../../sdcard/standby.json"
+   scriverebbe dove non deve. Si tengono lettere, cifre, punto, trattino e
+   underscore; tutto il resto diventa underscore. */
+static std::string nome_pulito(const char *n)
+{
+    std::string out;
+    for (const char *c = n; *c && out.size() < 48; c++) {
+        bool ok = (*c >= 'a' && *c <= 'z') || (*c >= 'A' && *c <= 'Z') ||
+                  (*c >= '0' && *c <= '9') || *c == '.' || *c == '-' || *c == '_';
+        out += ok ? *c : '_';
+    }
+    while (!out.empty() && out[0] == '.') out.erase(0, 1);   // niente file nascosti
+    return out;
+}
+
+static void foto_task(void *arg)
+{
+    LavoroFoto *l = (LavoroFoto *)arg;
+    mkdir(CARTELLA_FOTO, 0777);
+    std::string dest = std::string(CARTELLA_FOTO) + "/" + l->nome;
+    bool ok = web_image_scarica_file(l->url.c_str(), dest.c_str());
+    ESP_LOGI(TAG, "foto %s: %s", l->nome.c_str(), ok ? "salvata" : "NON salvata");
+    delete l;
+    vTaskDelete(NULL);
+}
+
 static void on_command(const cJSON *data, void *ctx)
 {
     (void)ctx;
@@ -329,6 +444,62 @@ static void on_command(const cJSON *data, void *ctx)
     } else if (!strcmp(cmd, "slideshow")) {
         apply_slideshow(cJSON_GetObjectItem(data, "config"));
         if (!s_owns) owns_save(true);
+    } else if (!strcmp(cmd, "esporta")) {
+        const cJSON *r = cJSON_GetObjectItem(data, "richiesta");
+        avvia_backup(false, !cJSON_IsFalse(cJSON_GetObjectItem(data, "cifrato")),
+                     cJSON_IsString(r) ? r->valuestring : "");
+    } else if (!strcmp(cmd, "chiave")) {
+        const cJSON *r = cJSON_GetObjectItem(data, "richiesta");
+        avvia_backup(true, true, cJSON_IsString(r) ? r->valuestring : "");
+    } else if (!strcmp(cmd, "importa")) {
+        const cJSON *f = cJSON_GetObjectItem(data, "file");
+        const cJSON *k = cJSON_GetObjectItem(data, "chiave");
+        if (cJSON_IsString(f)) {
+            char msg[160];
+            bool ok = backup_importa(f->valuestring,
+                                     cJSON_IsString(k) ? k->valuestring : NULL,
+                                     msg, sizeof(msg));
+            ESP_LOGW(TAG, "ripristino da Home Assistant: %s", msg);
+            avviso_ui_mostra(ok ? "Configurazione ripristinata. Riavvio..."
+                                : "Ripristino non riuscito.");
+            if (ok) {
+                /* Un pannello che continua a girare con meta' della vecchia
+                   configurazione in RAM e meta' della nuova in memoria non e'
+                   ne' l'una ne' l'altra cosa. */
+                vTaskDelay(pdMS_TO_TICKS(2500));
+                esp_restart();
+            }
+        }
+    } else if (!strcmp(cmd, "foto")) {
+        const cJSON *u = cJSON_GetObjectItem(data, "url");
+        const cJSON *n = cJSON_GetObjectItem(data, "nome");
+        if (cJSON_IsString(u) && cJSON_IsString(n)) {
+            LavoroFoto *l = new LavoroFoto();
+            l->url = u->valuestring;
+            l->nome = nome_pulito(n->valuestring);
+            if (l->nome.empty()) l->nome = "foto.jpg";
+            if (xTaskCreate(foto_task, "ha_foto", 8192, l, 3, NULL) != pdPASS) delete l;
+        }
+    } else if (!strcmp(cmd, "elimina_foto")) {
+        const cJSON *n = cJSON_GetObjectItem(data, "nome");
+        if (cJSON_IsTrue(cJSON_GetObjectItem(data, "tutte"))) {
+            DIR *d = opendir(CARTELLA_FOTO);
+            int q = 0;
+            if (d) {
+                struct dirent *e;
+                while ((e = readdir(d))) {
+                    std::string p = std::string(CARTELLA_FOTO) + "/" + e->d_name;
+                    if (unlink(p.c_str()) == 0) q++;
+                }
+                closedir(d);
+            }
+            ESP_LOGW(TAG, "foto cancellate: %d (lo slideshow le rilegge al prossimo giro)", q);
+        } else if (cJSON_IsString(n)) {
+            std::string nm = nome_pulito(n->valuestring);
+            std::string p = std::string(CARTELLA_FOTO) + "/" + nm;
+            ESP_LOGI(TAG, "foto %s: %s", nm.c_str(),
+                     unlink(p.c_str()) == 0 ? "cancellata" : "non c'era");
+        }
     } else if (!strcmp(cmd, "stato")) {
         /* niente da fare: lo stato lo mandiamo qui sotto in ogni caso */
     } else {

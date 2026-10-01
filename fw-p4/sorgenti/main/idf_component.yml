@@ -1,7 +1,11 @@
 ## IDF Component Manager Manifest File
 dependencies:
+  # La 0.16.x porta dentro una cartella per ogni versione di IDF (idf_v5.3 ...
+  # idf_v6.0) e la idf_v6.1 non ce l'ha: con IDF 6.1 la compilazione si ferma
+  # su "Cannot find source file: idf_v6.1/esp_wifi_remote_weak.c". La linea
+  # 1.6.x la ha.
   espressif/esp_wifi_remote:
-    version: "^0.16.1"
+    version: "^1.6"
     
   espressif/esp_hosted:
     version: "^2.3.0"

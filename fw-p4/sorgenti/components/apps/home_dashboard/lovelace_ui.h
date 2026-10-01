@@ -7,7 +7,7 @@
 // Tutte le funzioni vanno chiamate con il lock del display preso.
 //
 // Card supportate (fase 1): heading, tile, button, entity, sensor, entities,
-// glance, gauge, statistics-graph, history-graph,
+// glance, gauge, statistics-graph, history-graph, le card energy-*,
 // vertical-stack, horizontal-stack, grid. Le altre compaiono come
 // riquadro grigio con il loro tipo.
 
@@ -31,6 +31,8 @@ void ll_unbind(void);
 void ll_charts_start(void);
 // Forza il riscaricamento di tutti i grafici (comando UART "refresh").
 void ll_charts_refresh(void);
+// Rilegge le preferenze Energia e i suoi dati (riconnessione, o "refresh").
+void ll_energy_refresh(void);
 
 // Entita' da seguire in piu' rispetto alla vista (es. sovrimpressione dello
 // standby). Dopo la chiamata va riletto ll_entity_ids() per l'iscrizione.

@@ -27,7 +27,9 @@ static bool s_hooked = false;
 
 static void monitor_cb(lv_disp_drv_t *drv, uint32_t time, uint32_t px)
 {
-    s_frames++;
+    /* Non "s_frames++": dalla C++20 l'incremento su una variabile volatile e'
+       deprecato, e in ESP-IDF 6 quel warning e' diventato un errore. */
+    s_frames = s_frames + 1;
     if (s_prev_monitor) s_prev_monitor(drv, time, px);
 }
 

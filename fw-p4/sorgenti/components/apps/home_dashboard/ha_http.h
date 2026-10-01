@@ -22,6 +22,12 @@ void ha_http_url_encode(const char *in, char *out, size_t sz);
 // e' nemmeno partita. La risposta finisce in resp.
 int ha_http_post_form(const char *url, const char *body, char *resp, size_t resp_sz);
 
+// GET con il permesso di Home Assistant gia' attaccato. Serve alle parti
+// dell'API che il WebSocket non espone: il calendario e il registro degli
+// eventi si chiedono solo via HTTP. La risposta puo' essere lunga, quindi il
+// buffer lo alloca chi chiama. Ritorna il codice HTTP, -1 se non parte.
+int ha_http_get_auth(const char *url, char *resp, size_t resp_sz);
+
 #ifdef __cplusplus
 }
 #endif

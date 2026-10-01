@@ -23,6 +23,11 @@ void secret_hash_make(const char *secret, const uint8_t salt[SECRET_SALT_LEN],
 // Confronto a tempo costante: non deve trapelare quanto ci si e' avvicinati.
 bool secret_hash_equal(const uint8_t a[SECRET_HASH_LEN], const uint8_t b[SECRET_HASH_LEN]);
 
+// Lo stesso per due stringhe segrete (l'identificativo di sessione del cookie).
+// strcmp si ferma al primo carattere diverso, e il tempo che ci mette racconta
+// quanti ne aveva gia' indovinati: qui si guardano sempre tutti.
+bool secret_str_equal(const char *a, const char *b);
+
 void secret_hash_new_salt(uint8_t salt[SECRET_SALT_LEN]);
 
 // Attesa dopo i tentativi sbagliati: 0 fino a "free_tries", poi 30 s che

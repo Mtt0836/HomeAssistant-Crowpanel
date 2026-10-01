@@ -14,6 +14,8 @@
 #include "freertos/semphr.h"
 #include "driver/uart.h"
 #include <math.h>
+#include "energy_model.h"
+#include "backup.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "esp_codec_dev.h"
@@ -314,6 +316,55 @@ static void enprefs_cb(bool ok, cJSON *result, const char *error, void *ctx)
     char *j = cJSON_PrintUnformatted(result);
     printf("<<<ENPREFS>>>\n%s\n<<<END>>>\n", j ? j : "null");
     free(j);
+}
+
+/* Lo stato del pannello Energia: cosa ha trovato nelle preferenze, che numeri
+   ne ha ricavato e per quale finestra. Serve a capire perche' le card mostrano
+   quello che mostrano - sopratutto a chi ha una configurazione Energia diversa
+   dalla nostra, che e' poi quasi chiunque. */
+static void cmd_energia(const char *args)
+{
+    if (args && *args) {
+        EnergyPeriodo p = EN_OGGI;
+        if      (!strncmp(args, "sett", 4)) p = EN_SETTIMANA;
+        else if (!strncmp(args, "mese", 4)) p = EN_MESE;
+        else if (!strncmp(args, "anno", 4)) p = EN_ANNO;
+        energy_model_set_periodo(p);
+    }
+    energy_model_forza();
+
+    const EnergyModel *m = energy_model_get();
+    printf("ENERGIA periodo=%s prefs=%s dati=%s%s%s\n",
+           energy_periodo_nome(m->periodo),
+           m->prefs_lette ? "lette" : "no",
+           m->dati_pronti ? "pronti" : "no",
+           m->errore.empty() ? "" : " errore=", m->errore.c_str());
+    printf("ENERGIA configurato: rete=%d solare=%d batteria=%d gas=%d acqua=%d dispositivi=%u\n",
+           m->c_e_rete, m->c_e_solare, m->c_e_batteria, m->c_e_gas, m->c_e_acqua,
+           (unsigned)m->dispositivi.size());
+    printf("ENERGIA rete +%.3f -%.3f  sole %.3f  batteria +%.3f -%.3f  casa %.3f\n",
+           m->rete_presa, m->rete_immessa, m->solare,
+           m->batteria_scarica, m->batteria_carica, m->casa);
+    printf("ENERGIA autosufficienza=%.0f sole_in_casa=%.0f bilancio_rete=%.0f (negativo = non calcolabile)\n",
+           m->autosufficienza, m->solare_usato, m->neutralita);
+    for (const EnergyVoce &d : m->dispositivi)
+        printf("ENERGIA dispositivo %-44s %.3f\n", d.id.c_str(), d.totale);
+    printf("ENERGIA (se dice \"no\" richiama fra qualche secondo: la richiesta si accoda)\n");
+}
+
+/* Prova la catena del salvataggio: esporta, cifra, riapre e confronta, senza
+   scrivere niente e senza stampare un solo pezzo di configurazione. */
+static void cmd_backup(void)
+{
+    char r[240];
+    backup_autoprova(r, sizeof(r));
+    printf("BACKUP %s\n", r);
+    char k[BACKUP_CHIAVE_MAX];
+    /* Della chiave si mostra solo l'inizio: basta a vedere che c'e' ed e'
+       sempre la stessa, non basta a nessuno per usarla. */
+    if (backup_chiave_testo(k, sizeof(k)))
+        printf("BACKUP chiave presente (comincia per %.4s), gia' scaricata: %s\n",
+               k, backup_chiave_gia_presa() ? "si" : "no");
 }
 
 static void cmd_enprefs(void)
@@ -716,7 +767,7 @@ static void handle(char *line)
     bsp_display_unlock();
 
     if (!strcmp(line, "help")) {
-        printf("COMANDI: open | openapp <id> | shot [1-8] | info | fw | cpmem | url <ws://..> | dash <path> [vista] | refresh | ramlog [ora] | ls <path> | tasks | lvgl ram/psram | console on/off | standby | wizard [step N|done|reset] | llcfg | enprefs | sdiooff | entities | scroll [px] | tap x y | drag x1 y1 x2 y2 | mic | factory | reboot | slaveota <http://..> [prova] | help\n");
+        printf("COMANDI: open | openapp <id> | shot [1-8] | info | fw | cpmem | url <ws://..> | dash <path> [vista] | refresh | ramlog [ora] | ls <path> | tasks | lvgl ram/psram | console on/off | standby | wizard [step N|done|reset] | llcfg | enprefs | energia [oggi|settimana|mese|anno] | backup | sdiooff | entities | scroll [px] | tap x y | drag x1 y1 x2 y2 | mic | factory | reboot | slaveota <http://..> [prova] | help\n");
     } else if (!strcmp(line, "mic")) {
         cmd_mic();
     } else if (!strncmp(line, "setscr ", 7)) {
@@ -768,6 +819,10 @@ static void handle(char *line)
         printf("STANDBY_OK\n");
     } else if (!strcmp(line, "llcfg")) {
         cmd_llcfg();
+    } else if (!strncmp(line, "energia", 7)) {
+        cmd_energia(line[7] == ' ' ? line + 8 : "");
+    } else if (!strcmp(line, "backup")) {
+        cmd_backup();
     } else if (!strcmp(line, "enprefs")) {
         cmd_enprefs();
     } else if (!strncmp(line, "dltest ", 7)) {

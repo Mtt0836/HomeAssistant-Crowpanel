@@ -2,7 +2,27 @@
 
 Le cose che hanno fatto perdere giorni, scritte perché non le perda anche
 qualcun altro. Valgono per il CrowPanel Advance 10.1" V1.1/V1.2 con
-ESP-IDF 5.4.4.
+ESP-IDF 6.1.
+
+## Due trappole del passaggio da ESP-IDF 5.4.4 alla 6.1
+
+**Il valore predefinito della revisione del silicio è stato capovolto.**
+L'ESP32-P4 esiste in due famiglie — revisioni 0.x/1.x e 3.x — che ESP-IDF
+dichiara *mutuamente esclusive*: il binario si compila per una o per l'altra.
+Fino alla 5.4.4 `ESP32P4_SELECTS_REV_LESS_V3` era acceso di serie; nella 6.1
+non più. I CrowPanel in giro sono revisione v1.3, e con il predefinito nuovo
+la scrittura in flash si ferma con *«requires chip revision in range
+[v3.1 - v3.99]»*. Non si forza con `--force`: vorrebbe dire far girare su un
+silicio codice compilato per un altro. Si scrive la scelta in
+`sdkconfig.defaults` e non ci si pensa più.
+
+**Le scelte che vivono solo in `sdkconfig` si perdono.** Quel file è generato
+e sta fuori dal repository, quindi una cartella nuova non lo eredita. Il caso
+concreto: `CONFIG_EXAMPLE_ENABLE_SD_CARD` esisteva soltanto lì. Senza, non si
+accende l'LDO 4 e il bus I2C resta senza alimentazione: al primo avvio il
+pannello ha prodotto 1205 errori di lettura del GT911 in 71 secondi, con lo
+schermo acceso e la dashboard funzionante ma il touch morto. Ogni scelta che
+conta va in `sdkconfig.defaults`, che è un file vero del progetto.
 
 ## La scheda SD alimenta il bus I2C
 

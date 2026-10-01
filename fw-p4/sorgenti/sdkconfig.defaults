@@ -23,6 +23,17 @@ CONFIG_CACHE_L2_CACHE_LINE_64B=y
 # di venti secondi di riavvio. Il crash non passa comunque inosservato: il
 # motivo dell'ultimo riavvio finisce in Home Assistant, fra i sensori.
 CONFIG_ESP_SYSTEM_PANIC_PRINT_REBOOT=y
+# Il bootloader di ESP-IDF 6.1 e' cresciuto: 0x6140 byte contro i 0x6000 che
+# ci stanno prima della tabella delle partizioni a 0x8000. Le due strade erano
+# spostare la tabella oppure far dimagrire il bootloader, e spostare la tabella
+# significava spostare anche la nvs, che le sta subito dietro a 0x9000: il
+# pannello si sarebbe ritrovato senza indirizzo di Home Assistant, senza
+# permesso, senza password e senza PIN al primo avvio dopo l'aggiornamento.
+# Abbassare il livello di log del bootloader costa molto meno: le stringhe
+# sono il grosso di quei byte, e quello che il bootloader racconta all'avvio
+# su un pannello appeso al muro non lo legge nessuno. Errori e avvisi
+# continuano a uscire.
+CONFIG_BOOTLOADER_LOG_LEVEL_WARN=y
 # La partizione dati non viene piu' scritta a ogni flash (vedi
 # main/CMakeLists.txt), quindi su un pannello nuovo e' vergine: si formatta
 # da sola al primo montaggio. Senza questa, /spiffs non esisterebbe proprio.
@@ -137,3 +148,86 @@ CONFIG_HTTPD_MAX_URI_LEN=1024
 # appena un browser tiene aperte alcune connessioni: il pannello smetteva di
 # rispondere e l'abbinamento falliva senza nemmeno partire.
 CONFIG_LWIP_MAX_SOCKETS=16
+
+# Scrittura dei certificati X.509. Serve a web_cert.cpp, che al primo avvio
+# genera da se' il certificato con cui il pannello parla in HTTPS.
+#
+# Fino alla 5.4 questo codice c'era sempre e non si poteva togliere. Nella 6.1
+# e' diventato un interruttore che parte spento, perche' la gran parte dei
+# dispositivi i certificati li legge e non li scrive, e quel codice e' spazio
+# in flash buttato. Noi li scriviamo, quindi lo si riaccende.
+#
+# La scrittura delle CSR resta spenta: si accenderebbe da sola insieme a
+# CREATE_C, ma una richiesta di firma la si manda a un'autorita' di
+# certificazione, e qui il certificato se lo firma il pannello da solo.
+CONFIG_MBEDTLS_X509_CREATE_C=y
+CONFIG_MBEDTLS_X509_CRT_WRITE_C=y
+# CONFIG_MBEDTLS_X509_CSR_WRITE_C is not set
+
+# Revisione del silicio. Questa riga vale il pannello.
+#
+# L'ESP32-P4 esiste in due famiglie molto diverse: le revisioni 0.x e 1.x da
+# una parte, le 3.x dall'altra. ESP-IDF non le sa servire insieme - lo dice
+# esplicitamente, "mutually exclusive" - e il binario si compila per una o per
+# l'altra. Il bootloader poi controlla, e se non corrisponde si rifiuta di
+# partire.
+#
+# Il P4 di questo CrowPanel e' revisione v1.3.
+#
+# Fino alla 5.4.4 questa opzione era accesa di serie e non serviva scriverla.
+# Nella 6.1 il valore predefinito e' stato capovolto: ora si punta alle 3.x, e
+# il primo tentativo di scrivere in flash si e' fermato con
+#     'bootloader.bin' requires chip revision in range [v3.1 - v3.99]
+#     (this chip is revision v1.3)
+# Si potrebbe zittire con --force, ma vorrebbe dire far girare su un silicio
+# codice compilato per un altro: da non fare.
+#
+# Scritta qui, la scelta non dipende piu' da quale versione di ESP-IDF si usa.
+# Il minimo e' v0.1 e il massimo diventa v1.99, gli stessi valori di V0.2.
+CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y
+CONFIG_ESP32P4_REV_MIN_1=y
+
+# Scheda SD: deve restare attiva, anche senza scheda inserita.
+#
+# bsp_sdcard_mount() e' l'unico punto di tutto il progetto che accende l'LDO
+# canale 4, e da quell'LDO dipende l'alimentazione dei dispositivi I2C: il
+# touch GT911, il codec audio e il coprocessore STC8. Senza, il bus I2C e'
+# muto. Il mount fallisce comunque se la scheda non c'e', ma l'LDO viene
+# acceso prima del fallimento, ed e' quello che conta.
+#
+# Questa riga e' qui perche' la sua assenza si e' fatta sentire subito: al
+# primo avvio di V0.3 il pannello ha inondato il log di
+#     GT911: esp_lcd_touch_gt911_read_data(232): I2C read error!
+# uno ogni 30 ms, senza mai riprendersi. Lo schermo si accendeva e la
+# dashboard funzionava, ma il pannello non si lasciava toccare.
+#
+# Il motivo per cui si era persa: in V0.2 questa scelta viveva soltanto nel
+# file sdkconfig, che e' generato e che .gitignore tiene fuori dal repository.
+# V0.3 e' nata da "git archive", cioe' dai soli file tracciati, e quella riga
+# non c'era. Scritta qui non si perde piu': sdkconfig.defaults e' un file vero
+# del progetto.
+CONFIG_EXAMPLE_ENABLE_SD_CARD=y
+
+# Le tre righe della camera, riportate ai valori di V0.2 per non lasciare
+# differenze silenziose fra le due cartelle. Si erano perse insieme a quella
+# sopra, per lo stesso motivo. (La camera non viene usata: manca il sensore.)
+CONFIG_EXAMPLE_ENABLE_CAM_SENSOR_PIC_HFLIP=y
+CONFIG_EXAMPLE_MIPI_CSI_SCCB_I2C_SCL_PIN=13
+CONFIG_EXAMPLE_MIPI_CSI_SCCB_I2C_SDA_PIN=12
+
+# Decoder PNG. Le card "picture" di Home Assistant puntano spesso a immagini
+# in /local/, e li' dentro i PNG sono la regola: senza questo, quelle card
+# resterebbero vuote proprio dove l'utente le ha messe apposta.
+#
+# Il JPEG lo decodifica l'acceleratore del P4 e non costa niente in flash; il
+# PNG no, va fatto a software (lodepng). Si paga in spazio, e lo spazio c'e':
+# la partizione dell'applicazione e' libera al 63%.
+CONFIG_LV_USE_PNG=y
+
+# Accesso ai file per LVGL. Serve al decoder PNG: cosi' si puo' dare a una
+# immagine un percorso ("S:/sdcard/...") e LVGL legge e decodifica da se',
+# invece di doverle passare un'immagine gia' pronta in memoria.
+# La lettera e' la S di "scheda": 83 e' il suo codice ASCII.
+CONFIG_LV_USE_FS_POSIX=y
+CONFIG_LV_FS_POSIX_LETTER=83
+CONFIG_LV_FS_POSIX_PATH=""

@@ -19,9 +19,9 @@ anche da fuori casa.
 
 ---
 
-**Versione 0.1.0 — prima pubblicazione, 28 settembre 2026.**
+**Versione 0.2.0 — 1 ottobre 2026.**
 
-Provata su hardware vero: un CrowPanel Advance 10.1" V1.2 con ESP-IDF 5.4.4,
+Provata su hardware vero: un CrowPanel Advance 10.1" V1.2 con ESP-IDF 6.1,
 collegato a un Home Assistant di casa. Prima di pubblicarla il pannello ha
 retto una veglia continua con il registro della seriale sotto osservazione,
 attraversando piu' volte il ciclo completo dello standby — slideshow, schermo
@@ -287,7 +287,7 @@ invece di sparire in silenzio.
 
 Non serve per usare il pannello: i binari pronti sono in `fw-p4/binari`.
 
-Serve **ESP-IDF 5.4.4** (altre versioni non sono state provate). Il progetto
+Serve **ESP-IDF 6.1** (altre versioni non sono state provate). Il progetto
 del P4 sta in [`fw-p4/sorgenti`](fw-p4/sorgenti):
 
 ```bash
