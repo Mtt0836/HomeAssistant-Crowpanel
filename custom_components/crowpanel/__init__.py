@@ -235,7 +235,8 @@ async def _registra_servizi(hass: HomeAssistant) -> None:
     await registra_backup(hass, store)
 
     # Le foto dello slideshow: anche queste un pezzo a se', con la conversione
-    # che vuole Pillow e una vista HTTP tutta sua.
+    # che usa Pillow (gia' dentro Home Assistant: non va dichiarata, e
+    # hassfest si arrabbia se lo si fa) e una vista HTTP tutta sua.
     from .foto import registra as registra_foto
     await registra_foto(hass, store)
 
