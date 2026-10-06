@@ -105,7 +105,7 @@ MISURE: tuple[Misura, ...] = (
         key="alimentazione",
         icon="mdi:power-plug",
         device_class=SensorDeviceClass.ENUM,
-        options=["sconosciuto", "in carica", "carica", "a batteria", "errore"],
+        options=["sconosciuto", "in_carica", "carica", "a_batteria", "errore"],
         entity_category=EntityCategory.DIAGNOSTIC,
         leggi=lambda s: s.get("alimentazione"),
     ),

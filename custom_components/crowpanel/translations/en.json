@@ -138,9 +138,9 @@
         "name": "Power",
         "state": {
           "sconosciuto": "Unknown",
-          "in carica": "Charging",
+          "in_carica": "Charging",
           "carica": "Charged",
-          "a batteria": "On battery",
+          "a_batteria": "On battery",
           "errore": "Error"
         }
       },

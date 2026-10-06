@@ -51,4 +51,4 @@ add_compile_options(
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-deprecated-enum-enum-conversion")
 
-project(HA_Display VERSION 0.3.2)
+project(HA_Display VERSION 0.3.3)

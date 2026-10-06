@@ -138,9 +138,9 @@
         "name": "Alimentazione",
         "state": {
           "sconosciuto": "Sconosciuta",
-          "in carica": "In carica",
+          "in_carica": "In carica",
           "carica": "Carica",
-          "a batteria": "A batteria",
+          "a_batteria": "A batteria",
           "errore": "Errore"
         }
       },

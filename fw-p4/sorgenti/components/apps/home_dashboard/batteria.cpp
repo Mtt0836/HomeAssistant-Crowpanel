@@ -511,12 +511,22 @@ static void corsa_concludi(void)
 
 // ------------------------------------------------------------------ lettura
 
+/* Senza spazi, e non e' una scelta di stile: questi valori arrivano a Home
+   Assistant come stato di un sensore a scelta fissa, e li' le voci devono
+   essere chiavi macchina ([a-z0-9-_]) perche' il nome visibile lo danno le
+   traduzioni - altrimenti chi ha Home Assistant in inglese si ritrova
+   l'italiano. hassfest rifiuta l'integrazione se non lo sono.
+
+   Restano una lista sola anche se finiscono in tre posti diversi (Home
+   Assistant, la console, il registro su SD): due liste che devono dire la
+   stessa cosa prima o poi dicono cose diverse. Nel registro e sulla console
+   "in_carica" si legge benissimo. */
 const char *batteria_stato_parole(batt_stato_t s)
 {
     switch (s) {
-    case BATT_IN_CARICA:   return "in carica";
+    case BATT_IN_CARICA:   return "in_carica";
     case BATT_CARICA:      return "carica";
-    case BATT_A_BATTERIA:  return "a batteria";
+    case BATT_A_BATTERIA:  return "a_batteria";
     case BATT_ERRORE:      return "errore";
     default:               return "sconosciuto";
     }
