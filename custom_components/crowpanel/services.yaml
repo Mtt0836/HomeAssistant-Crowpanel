@@ -192,3 +192,42 @@ elimina_foto:
       description: Cancella tutte le foto. Non si torna indietro.
       selector:
         boolean:
+
+invia_firmware:
+  name: Manda un firmware al pannello
+  description: >-
+    Manda al pannello una versione presa dall'archivio. Il pannello la scarica,
+    ne ricalcola l'impronta e la installa solo se corrisponde; poi riavvia. Se
+    il firmware nuovo non regge due minuti collegato a Home Assistant, il
+    pannello rimette da solo quello di prima.
+  fields:
+    pannello:
+      name: Pannello
+      description: Identificativo del pannello.
+      required: true
+      example: a1b2c3d4
+      selector:
+        text:
+    nome:
+      name: Firmware
+      description: >-
+        Il nome del file nell'archivio. L'elenco si vede da Impostazioni,
+        Dispositivi e servizi, CrowPanel, Configura, Firmware.
+      required: true
+      example: esp_brookesia_demo.bin
+      selector:
+        text:
+
+elimina_firmware:
+  name: Togli un firmware dall'archivio
+  description: >-
+    Cancella una versione dall'archivio di Home Assistant. Non tocca il
+    pannello. Attenzione a non togliere la versione a cui si vorrebbe tornare.
+  fields:
+    nome:
+      name: Firmware
+      description: Il nome del file nell'archivio.
+      required: true
+      example: esp_brookesia_demo.bin
+      selector:
+        text:

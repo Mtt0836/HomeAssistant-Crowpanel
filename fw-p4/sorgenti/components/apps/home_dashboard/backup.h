@@ -43,6 +43,18 @@
 extern "C" {
 #endif
 
+/* Vero se questa voce della NVS e' un segreto: il permesso di Home Assistant,
+   la chiave privata del certificato, le impronte di password e PIN.
+
+   Sta qui, in chiaro nell'intestazione, perche' l'elenco dei segreti deve
+   esistere in UN SOLO posto. Lo usa il salvataggio in chiaro per lasciarli
+   fuori, e lo usa chiunque mostri la configurazione a qualcuno - per esempio
+   l'esploratore della NVS nella pagina web, che dei segreti mostra che
+   esistono e non il valore. Con due elenchi separati, il giorno che si
+   aggiunge un segreto se ne aggiorna uno e si dimentica l'altro, e il permesso
+   di Home Assistant finisce su una pagina web. */
+bool backup_e_segreto(const char *ns, const char *chiave);
+
 /* La chiave di recupero in forma leggibile (gruppi di quattro caratteri).
    La crea al primo uso. Il buffer vuole almeno BACKUP_CHIAVE_MAX byte. */
 #define BACKUP_CHIAVE_MAX 80

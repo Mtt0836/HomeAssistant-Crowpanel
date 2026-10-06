@@ -21,13 +21,13 @@ Poi, da dentro `binari/`:
 ```bash
 esptool.py --chip esp32p4 -p PORTA -b 460800 --before default_reset --after hard_reset \
   write_flash --flash_mode dio --flash_size 16MB --flash_freq 80m \
-  0x2000 bootloader.bin 0x8000 partition-table.bin 0x10000 esp_brookesia_demo.bin
+  0x2000 bootloader.bin 0x8000 partition-table.bin 0x10000 ota_data_initial.bin 0x20000 HA_Display.bin
 ```
 
 Su Windows, in PowerShell, la stessa cosa su una riga sola:
 
 ```powershell
-esptool.py --chip esp32p4 -p COM5 -b 460800 --before default_reset --after hard_reset write_flash --flash_mode dio --flash_size 16MB --flash_freq 80m 0x2000 bootloader.bin 0x8000 partition-table.bin 0x10000 esp_brookesia_demo.bin
+esptool.py --chip esp32p4 -p COM5 -b 460800 --before default_reset --after hard_reset write_flash --flash_mode dio --flash_size 16MB --flash_freq 80m 0x2000 bootloader.bin 0x8000 partition-table.bin 0x10000 ota_data_initial.bin 0x20000 HA_Display.bin
 ```
 
 Se `esptool.py` non viene trovato, prova `python -m esptool` al suo posto.
@@ -37,13 +37,20 @@ Dura un paio di minuti. Alla fine il pannello riparte da solo.
 Se il caricamento non parte (`Failed to connect`), tieni premuto il tasto
 BOOT mentre dai il comando, oppure abbassa la velocità con `-b 115200`.
 
-## Cosa c'è nei tre file
+## Cosa c'è nei quattro file
 
 | File | Indirizzo | Cos'è |
 |---|---|---|
 | `bootloader.bin` | `0x2000` | l'avvio |
 | `partition-table.bin` | `0x8000` | come è divisa la flash |
-| `esp_brookesia_demo.bin` | `0x10000` | l'applicazione (il nome è quello della demo da cui parte) |
+| `ota_data_initial.bin` | `0x10000` | da quale dei due slot partire la prima volta |
+| `HA_Display.bin` | `0x20000` | l'applicazione |
+
+L'applicazione sta a `0x20000` e non a `0x10000` perché la flash ha **due slot**
+per il firmware, non uno: è quello che permette al pannello di aggiornarsi dalla
+rete, scrivendo nello slot fermo e passandoci solo a verifica fatta. Se hai
+istruzioni più vecchie che dicono `0x10000`, non seguirle: scriverebbero
+l'applicazione sopra `ota_data` e il pannello non ripartirebbe.
 
 `flash_args` è lo stesso elenco nel formato di esptool: con
 `esptool.py --chip esp32p4 -p PORTA write_flash "@flash_args"` si ottiene la

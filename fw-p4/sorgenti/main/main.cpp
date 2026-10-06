@@ -20,6 +20,8 @@
 #include "home_dashboard/ha_discover.h"
 #include "home_dashboard/idle_manager.h"
 #include "home_dashboard/ram_monitor.h"
+#include "home_dashboard/batteria.h"
+#include "home_dashboard/ota_update.h"
 #include "home_dashboard/debug_config.h"
 #include "setting/setup_wizard.h"
 #include "../components/espressif__esp32_p4_function_ev_board/bsp_stc8h1kxx.h"
@@ -28,53 +30,6 @@
 #include "esp_timer.h"
 
 static const char *TAG = "main";
-
-static TaskHandle_t battery_info_task_handle = NULL;     
-uint32_t adc_voltage;
-uint32_t bat_voltage;
-uint32_t bat_level;
-uint8_t bat_state;
-uint8_t led_state;
-
-/*
-    The task to get battery information from stc8h1kxx via i2c
-*/
-/* L'alimentazione la legge gia' il task qui sotto, ogni giro, sull'I2C del
-   coprocessore STC8. Questo la passa a chi la deve mandare a Home Assistant
-   senza ripetere la lettura: due padroni sullo stesso bus I2C sono un guaio
-   che non vale la pena di andarsi a cercare per tre numeri. */
-extern "C" void panel_alimentazione(uint32_t *mv, uint8_t *percento, uint8_t *stato);
-extern "C" void panel_alimentazione(uint32_t *mv, uint8_t *percento, uint8_t *stato)
-{
-    if (mv)       *mv       = bat_voltage;
-    if (percento) *percento = (uint8_t)bat_level;
-    if (stato)    *stato    = bat_state;
-}
-
-void battery_info_task(void *param)
-{
-    while (1)
-    {
-        Battery_info_t battery_info = {0};
-        stc8_battery_info_get(&battery_info);
-        adc_voltage = battery_info.adc_voltage;
-        bat_voltage = battery_info.bat_voltage;
-        bat_level   = battery_info.bat_level;
-        bat_state   = battery_info.bat_state;
-        led_state   = battery_info.led_state;
-        // ESP_LOGI(TAG, "adc_voltage = %lu mV", battery_info.adc_voltage);
-        // ESP_LOGI(TAG, "bat_voltage = %lu mV", battery_info.bat_voltage);
-        // ESP_LOGI(TAG, "bat_level = %d %%", battery_info.bat_level);
-        // ESP_LOGI(TAG, "bat_state = %d", battery_info.bat_state);
-        // ESP_LOGI(TAG, "led_state = %d", battery_info.led_state);
-        if (battery_info.bat_voltage <= 3500) {
-            ESP_LOGI(TAG, "esp_deep_sleep_start()");
-            vTaskDelay(100 / portTICK_PERIOD_MS);
-            esp_deep_sleep_start();
-        }
-        vTaskDelay(1000 / portTICK_PERIOD_MS);
-    }
-}
 
 extern esp_lcd_touch_handle_t tp;
 static int s_prev_brightness = 0;
@@ -140,19 +95,28 @@ extern "C" void app_main(void)
     ESP_ERROR_CHECK(bsp_extra_codec_init());
 
     stc8_i2c_init();
+    /* Una lettura sola, per il registro di avvio. Lo spegnimento di
+       protezione NON si decide qui: lo decide batteria.cpp, che per farlo
+       pretende dieci letture riuscite di fila sotto soglia.
+
+       Prima era il contrario, e la differenza non e' teorica. Qui la
+       struttura veniva azzerata e stc8_battery_info_get esce in anticipo se
+       l'I2C da' errore: bastava un errore su quel bus - lo stesso del touch,
+       che sotto pressione ce ne ha dati 1205 in 71 secondi - per lasciare
+       bat_voltage a zero, e zero e' minore di 3500. Il pannello se ne andava
+       in deep sleep durante l'avvio e sembrava morto. */
     Battery_info_t battery_info = {0};
-    stc8_battery_info_get(&battery_info);
-    ESP_LOGI(TAG, "adc_voltage = %lu mV", battery_info.adc_voltage);
-    ESP_LOGI(TAG, "bat_voltage = %lu mV", battery_info.bat_voltage);
-    ESP_LOGI(TAG, "bat_level = %d %%", battery_info.bat_level);
-    ESP_LOGI(TAG, "bat_state = %d", battery_info.bat_state);
-    ESP_LOGI(TAG, "led_state = %d", battery_info.led_state);
-    if (battery_info.bat_voltage <= 3500) {
-        ESP_LOGI(TAG, "esp_deep_sleep_start()");
-        vTaskDelay(100 / portTICK_PERIOD_MS);
-        esp_deep_sleep_start();
-    }
-    xTaskCreate(battery_info_task, "battery_info_task", 4096, NULL, 3, &battery_info_task_handle);
+    esp_err_t bat_err = stc8_battery_info_get(&battery_info);
+    ESP_LOGI(TAG, "alimentazione all'avvio: %s adc=%lu mV bat=%lu mV %d%% stato=%d led=%d",
+             esp_err_to_name(bat_err), battery_info.adc_voltage, battery_info.bat_voltage,
+             battery_info.bat_level, battery_info.bat_state, battery_info.led_state);
+    batteria_avvia();
+
+    /* Se questa immagine e' appena arrivata via rete, da qui parte la prova:
+       viene confermata solo dopo che il pannello ha retto collegato a Home
+       Assistant, altrimenti al prossimo riavvio il bootloader rimette quella
+       di prima. */
+    ota_update_init();
 
     bsp_display_cfg_t cfg = {
         .lvgl_port_cfg = ESP_LVGL_PORT_INIT_CONFIG(),
@@ -214,6 +178,14 @@ extern "C" void app_main(void)
     assert(home_dashboard != nullptr && "Failed to create home_dashboard");
     int ha_app_id = phone->installApp(home_dashboard);
     assert((ha_app_id >= 0) && "Failed to install home_dashboard");
+
+    /* Esplora: cosa c'e' sulla SD, guardato stando davanti al pannello. Scarica
+       e carica stanno solo nella pagina web, dove c'e' un computer dall'altra
+       parte; qui si guarda e basta. Se non si installa non e' un guaio da
+       fermare l'avvio - il pannello serve a mostrare Home Assistant. */
+    EsploraApp *esplora = new EsploraApp();
+    if (esplora && phone->installApp(esplora) < 0)
+        ESP_LOGW(TAG, "l'app Esplora non si e' installata: vado avanti senza");
 
     /* Console di servizio sulla UART di debug: permette di aprire l'app e di
        scaricare uno screenshot dal PC, senza dover toccare il pannello. */

@@ -28,6 +28,22 @@ int ha_http_post_form(const char *url, const char *body, char *resp, size_t resp
 // buffer lo alloca chi chiama. Ritorna il codice HTTP, -1 se non parte.
 int ha_http_get_auth(const char *url, char *resp, size_t resp_sz);
 
+/* Il certificato da usare per parlare in sicurezza con Home Assistant.
+
+   Ritorna il PEM dell'autorita' che l'utente ha indicato, oppure NULL se non
+   ne ha indicata nessuna - e allora si usa il pacchetto di autorita'
+   pubbliche compilato dentro ESP-IDF.
+
+   Il testo restituito resta valido finche' qualcuno non cambia il
+   certificato: si puo' passare direttamente a esp-tls senza copiarlo. E' un
+   posto solo perche' i client che parlano con HA sono quattro - il
+   WebSocket, la voce, le immagini e le prove della console - e tenerne
+   quattro copie vorrebbe dire che un giorno tre sono aggiornate e una no. */
+const char *ha_tls_ca(void);
+
+/* Rilegge il certificato dalla memoria: la chiama chi lo cambia. */
+void ha_tls_ricarica(void);
+
 #ifdef __cplusplus
 }
 #endif

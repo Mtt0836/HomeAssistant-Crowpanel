@@ -57,6 +57,12 @@ class OpzioniFlow(OptionsFlow):
         return self.hass.data.get(DOMAIN)
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None):
+        """Il bivio: impostazioni dello slideshow oppure archivio dei firmware."""
+        return self.async_show_menu(step_id="init", menu_options=["slideshow", "firmware"])
+
+    # ------------------------------------------------------------ slideshow
+
+    async def async_step_slideshow(self, user_input: dict[str, Any] | None = None):
         store = self._store()
         pannelli = list(store.noti) if store else []
         if not pannelli:
@@ -70,7 +76,7 @@ class OpzioniFlow(OptionsFlow):
 
         nomi = {p: (store.noti[p].get("nome") or p) for p in pannelli}
         return self.async_show_form(
-            step_id="init",
+            step_id="slideshow",
             data_schema=vol.Schema(
                 {vol.Required("pannello"): vol.In(nomi)}
             ),
@@ -129,4 +135,144 @@ class OpzioniFlow(OptionsFlow):
                 "pannello": store.noti.get(pid, {}).get("nome") or pid,
                 "quanti": str(quanti),
             },
+        )
+
+    # ------------------------------------------------------------- firmware
+
+    # L'archivio dei firmware vive qui dentro invece che in una pagina sua.
+    #
+    # Il motivo e' pratico: un'integrazione personalizzata non puo' aggiungere
+    # pagine a Home Assistant senza portarsi dietro del frontend da compilare e
+    # aggiornare a ogni versione. Il meccanismo delle opzioni invece c'e' gia',
+    # sa fare i menu, i moduli e il caricamento dei file, e si apre dal browser
+    # con due clic: Impostazioni, Dispositivi e servizi, Configura.
+
+    async def async_step_firmware(self, user_input: dict[str, Any] | None = None):
+        return self.async_show_menu(
+            step_id="firmware",
+            menu_options=["fw_carica", "fw_invia", "fw_elimina"],
+        )
+
+    async def _archivio(self):
+        from .firmware import archivio
+
+        return archivio(self.hass)
+
+    async def _scelte_fw(self) -> dict[str, str]:
+        """Le voci dell'archivio, descritte come le si vuole leggere."""
+        voci = await (await self._archivio()).elenca(self.hass)
+        fuori = {}
+        for v in voci:
+            desc = v.get("versione") or "?"
+            if v.get("data"):
+                desc += f" del {v['data']}"
+            fuori[v["nome"]] = f"{v['nome']} - {desc} ({v['byte'] // 1024} kB)"
+        return fuori
+
+    async def async_step_fw_carica(self, user_input: dict[str, Any] | None = None):
+        if user_input is not None:
+            from homeassistant.components.file_upload import process_uploaded_file
+
+            def leggi(file_id: str) -> bytes:
+                with process_uploaded_file(self.hass, file_id) as percorso:
+                    return percorso.read_bytes()
+
+            dati = await self.hass.async_add_executor_job(leggi, user_input["file"])
+            try:
+                voce = await (await self._archivio()).aggiungi(
+                    self.hass, dati, user_input.get("nome") or "firmware.bin",
+                    user_input.get("note", ""),
+                )
+            except Exception as e:  # noqa: BLE001
+                return self.async_abort(
+                    reason="fw_rifiutato", description_placeholders={"errore": str(e)}
+                )
+            return self.async_abort(
+                reason="fw_caricato",
+                description_placeholders={
+                    "nome": voce["nome"],
+                    "versione": voce.get("versione", "?"),
+                    "data": voce.get("data", "?"),
+                    "kb": str(voce["byte"] // 1024),
+                    "sha256": voce["sha256"][:16] + "...",
+                },
+            )
+
+        return self.async_show_form(
+            step_id="fw_carica",
+            data_schema=vol.Schema(
+                {
+                    vol.Required("file"): selector.FileSelector(
+                        selector.FileSelectorConfig(accept=".bin")
+                    ),
+                    vol.Optional("nome"): str,
+                    vol.Optional("note"): str,
+                }
+            ),
+        )
+
+    async def async_step_fw_invia(self, user_input: dict[str, Any] | None = None):
+        store = self._store()
+        pannelli = list(store.noti) if store else []
+        if not pannelli:
+            return self.async_abort(reason="nessun_pannello")
+        scelte = await self._scelte_fw()
+        if not scelte:
+            return self.async_abort(reason="archivio_vuoto")
+
+        if user_input is not None:
+            try:
+                esito = await self.hass.services.async_call(
+                    DOMAIN, "invia_firmware",
+                    {"pannello": user_input["pannello"], "nome": user_input["firmware"]},
+                    blocking=True, return_response=True,
+                )
+            except Exception as e:  # noqa: BLE001
+                return self.async_abort(
+                    reason="fw_rifiutato", description_placeholders={"errore": str(e)}
+                )
+            return self.async_abort(
+                reason="fw_mandato",
+                description_placeholders={
+                    "nome": str((esito or {}).get("nome", user_input["firmware"])),
+                    "versione": str((esito or {}).get("versione", "?")),
+                },
+            )
+
+        nomi = {p: (store.noti[p].get("nome") or p) for p in pannelli}
+        return self.async_show_form(
+            step_id="fw_invia",
+            data_schema=vol.Schema(
+                {
+                    vol.Required("pannello", default=pannelli[0]): vol.In(nomi),
+                    vol.Required("firmware"): vol.In(scelte),
+                }
+            ),
+        )
+
+    async def async_step_fw_elimina(self, user_input: dict[str, Any] | None = None):
+        scelte = await self._scelte_fw()
+        if not scelte:
+            return self.async_abort(reason="archivio_vuoto")
+
+        if user_input is not None:
+            if not user_input.get("confermo"):
+                return self.async_abort(reason="fw_non_eliminato")
+            await (await self._archivio()).elimina(self.hass, user_input["firmware"])
+            return self.async_abort(
+                reason="fw_eliminato",
+                description_placeholders={"nome": user_input["firmware"]},
+            )
+
+        # La conferma e' una casella da spuntare e non un semplice "Invia":
+        # togliere dall'archivio la versione a cui si sarebbe tornati indietro
+        # e' proprio la cosa da non fare per sbaglio.
+        return self.async_show_form(
+            step_id="fw_elimina",
+            data_schema=vol.Schema(
+                {
+                    vol.Required("firmware"): vol.In(scelte),
+                    vol.Required("confermo", default=False): bool,
+                }
+            ),
         )

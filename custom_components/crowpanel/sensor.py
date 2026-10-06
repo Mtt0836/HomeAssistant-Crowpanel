@@ -86,6 +86,10 @@ MISURE: tuple[Misura, ...] = (
         leggi=lambda s: s.get("alimentazione_mv"),
     ),
     Misura(
+        # La stima del pannello, da una curva tensione-carica che si tara da
+        # sola su una scarica completa. Non e' la percentuale del coprocessore
+        # (quella sta qui sotto, disabilitata): il coprocessore segue la
+        # tensione, e sotto carica la tensione non e' quella della cella.
         key="alimentazione_pct",
         native_unit_of_measurement="%",
         device_class=SensorDeviceClass.BATTERY,
@@ -94,11 +98,83 @@ MISURE: tuple[Misura, ...] = (
         leggi=lambda s: s.get("alimentazione_pct"),
     ),
     Misura(
-        # Il numero grezzo del coprocessore. Cosa voglia dire non e'
-        # documentato: sta qui perche' lo si possa guardare mentre cambia -
-        # staccando la corrente, collegando una batteria - e dargli un nome
-        # quando lo si sara' capito. Meglio un numero onesto che un
-        # "in carica: si" inventato.
+        # Lo stato di carica in parole. L'enum e' quello del BSP di Elecrow
+        # (bsp_stc8h1kxx.h). Da leggere sapendo questo: senza batteria
+        # collegata il coprocessore dice "carica" esattamente come con una
+        # batteria piena, perche' da' per finita una carica che non parte.
+        key="alimentazione",
+        icon="mdi:power-plug",
+        device_class=SensorDeviceClass.ENUM,
+        options=["sconosciuto", "in carica", "carica", "a batteria", "errore"],
+        entity_category=EntityCategory.DIAGNOSTIC,
+        leggi=lambda s: s.get("alimentazione"),
+    ),
+    Misura(
+        # Quanto resta con il consumo attuale. C'e' solo se qualcuno ha
+        # misurato a pinza i due assorbimenti del pannello (comando console
+        # "batteria ma <spento> <acceso>") e il pannello ha completato una
+        # scarica di taratura: senza quei dati il tempo non si puo' sapere, e
+        # un numero inventato qui sarebbe peggio di nessun numero.
+        key="batteria_autonomia_min",
+        native_unit_of_measurement="min",
+        device_class=SensorDeviceClass.DURATION,
+        state_class=SensorStateClass.MEASUREMENT,
+        icon="mdi:battery-clock",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        leggi=lambda s: s.get("batteria_autonomia_min") or None,
+    ),
+    Misura(
+        # La capacita' vera del pacco, misurata sulla scarica di taratura.
+        # Dice se i mAh stampati sull'etichetta sono quelli.
+        key="batteria_mah",
+        native_unit_of_measurement="mAh",
+        icon="mdi:battery-heart-variant",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        leggi=lambda s: s.get("batteria_mah") or None,
+    ),
+    Misura(
+        # La percentuale del coprocessore, tenuta per confronto: e' quella che
+        # saltava attaccando e staccando la corrente.
+        key="alimentazione_pct_stc8",
+        native_unit_of_measurement="%",
+        state_class=SensorStateClass.MEASUREMENT,
+        icon="mdi:battery-unknown",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        leggi=lambda s: s.get("alimentazione_pct_stc8"),
+    ),
+    Misura(
+        # Quale firmware sta girando: nome del progetto, versione e data di
+        # compilazione, letti dal descrittore dentro l'immagine. Serve a sapere
+        # cosa c'e' installato senza doverlo chiedere al pannello.
+        key="firmware",
+        icon="mdi:chip",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        leggi=lambda s: s.get("firmware"),
+    ),
+    Misura(
+        # A che punto e' un aggiornamento. Resta "fermo" quasi sempre: diventa
+        # interessante per il minuto in cui si aggiorna.
+        key="ota",
+        icon="mdi:cloud-download",
+        device_class=SensorDeviceClass.ENUM,
+        options=["fermo", "scarica", "verifica", "pronto", "fallito"],
+        entity_category=EntityCategory.DIAGNOSTIC,
+        leggi=lambda s: s.get("ota"),
+    ),
+    Misura(
+        key="ota_pct",
+        native_unit_of_measurement="%",
+        state_class=SensorStateClass.MEASUREMENT,
+        icon="mdi:progress-download",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        leggi=lambda s: s.get("ota_pct"),
+    ),
+    Misura(
+        # Il numero grezzo del coprocessore, ora che si sa cosa vuol dire:
+        # 0 inattivo, 1 in carica, 2 piena, 3 non in carica, 4 errore.
         key="alimentazione_stato",
         icon="mdi:power-plug",
         entity_category=EntityCategory.DIAGNOSTIC,

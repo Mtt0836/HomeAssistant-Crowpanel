@@ -1,4 +1,6 @@
 #include "ha_ws.h"
+#include "ha_http.h"
+#include "esp_crt_bundle.h"
 #include "ha_token.h"
 #include <string.h>
 #include <stdio.h>
@@ -617,11 +619,40 @@ void ha_ws_start(const char *url, const char *token, const char *dash_path,
     cfg.buffer_size          = 4096;   // i messaggi grandi arrivano a frammenti
     cfg.task_stack           = 12288;  // parsing della dashboard + costruzione UI
 
+    /* Home Assistant dietro HTTPS.
+
+       Senza queste righe "wss://" non si collegava affatto: esp-tls non
+       sapeva di chi fidarsi e rifiutava il collegamento, e chi ha HA dietro
+       HTTPS non poteva usare il pannello del tutto.
+
+       Due casi. Se l'utente ha indicato un certificato - perche' se l'e'
+       fatto da se', come e' normale per un HA in casa - si usa quello. Se no
+       si usa il pacchetto di autorita' pubbliche compilato dentro ESP-IDF,
+       che copre Nabu Casa, Let's Encrypt e le altre.
+
+       Non c'e' un modo per "non controllare": chi ha un certificato proprio
+       lo incolla nella pagina del pannello, e in trenta secondi ha un
+       collegamento verificato invece di uno che si fida di chiunque. */
+    if (!strncmp(s_url, "wss://", 6)) {
+        const char *ca = ha_tls_ca();
+        if (ca) cfg.cert_pem = ca;
+        else    cfg.crt_bundle_attach = esp_crt_bundle_attach;
+    }
+
     s_client = esp_websocket_client_init(&cfg);
     esp_websocket_register_events(s_client, WEBSOCKET_EVENT_ANY, ws_event, NULL);
     esp_websocket_client_start(s_client);
 
-    xTaskCreate(watchdog_task, "ha_ws_wd", 4096, NULL, 4, NULL);
+    /* Diecimila byte e non quattromila.
+
+       Questo task non si limita a sorvegliare: dentro ci gira anche
+       ha_token_get_access(), cioe' la chiamata a Home Assistant per rinnovare
+       il permesso. Finche' quella chiamata era in chiaro quattro kilobyte
+       bastavano; da quando il pannello sa parlare in HTTPS, la stessa riga si
+       porta dietro una stretta di mano TLS, che di stack ne vuole parecchi di
+       piu'. Il primo collegamento a un Home Assistant in HTTPS faceva morire
+       il task con "stack protection fault" prima ancora di provarci. */
+    xTaskCreate(watchdog_task, "ha_ws_wd", 10240, NULL, 4, NULL);
 }
 
 void ha_ws_restart(const char *url, const char *token, const char *dash_path)

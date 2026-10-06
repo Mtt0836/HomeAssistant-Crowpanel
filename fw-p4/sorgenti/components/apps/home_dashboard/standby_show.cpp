@@ -1,5 +1,6 @@
 #include "standby_show.h"
 #include <dirent.h>
+#include <errno.h>
 #include <string.h>
 #include <strings.h>
 #include <stdio.h>
@@ -237,7 +238,19 @@ static bool leggi_tutto(FILE *f, uint8_t *dst, size_t n)
 static bool decode_and_fit(const char *path)
 {
     FILE *f = fopen(path, "rb");
-    if (!f) return false;
+    if (!f) {
+        /* Questo "return false" era muto, e il silenzio e' costato tempo: lo
+           slideshow saltava una foto dopo l'altra senza dire niente, e da
+           fuori sembrava che le foto non partissero piu' - senza una riga che
+           dicesse perche'. Un guasto che non si racconta si cerca a mano.
+
+           errno qui dice tutto: ENOENT la foto non c'e' piu', ENFILE o EMFILE
+           i descrittori di file sono finiti (il mount della SD ne concede un
+           numero fisso, vedi max_files in esp32_p4_function_ev_board.c), EIO
+           la scheda non risponde. */
+        ESP_LOGW(TAG, "%s non si apre: %s", path, strerror(errno));
+        return false;
+    }
     fseek(f, 0, SEEK_END); long insize = ftell(f); fseek(f, 0, SEEK_SET);
     if (insize <= 0) { fclose(f); return false; }
 
@@ -356,19 +369,14 @@ static bool decode_and_fit(const char *path)
     return true;
 }
 
-static std::vector<std::string> list_photos(void)
+/* Aggiunge a "v" i jpeg di una cartella e dice quanti ne ha trovati.
+   Cartella che non si apre: zero, senza lamentarsi - il chiamante decide se
+   e' un problema. */
+static size_t raccogli(const char *dir, std::vector<std::string> &v)
 {
-    std::vector<std::string> v;
-    /* Se la cartella configurata non c'e', si guarda nella radice della SD:
-       e' li' che finiscono le foto copiate al volo dal PC. */
-    const char *dir = s_cfg.folder;
     DIR *d = opendir(dir);
-    if (!d && strcmp(dir, "/sdcard") != 0) {
-        dir = "/sdcard";
-        d = opendir(dir);
-        if (d) ESP_LOGW(TAG, "%s assente: uso %s", s_cfg.folder, dir);
-    }
-    if (!d) return v;
+    if (!d) return 0;
+    size_t prima = v.size();
     struct dirent *e;
     while ((e = readdir(d)) != NULL) {
         const char *ext = strrchr(e->d_name, '.');
@@ -376,6 +384,25 @@ static std::vector<std::string> list_photos(void)
         v.push_back(std::string(dir) + "/" + e->d_name);
     }
     closedir(d);
+    return v.size() - prima;
+}
+
+static std::vector<std::string> list_photos(void)
+{
+    std::vector<std::string> v;
+    /* Prima la cartella configurata; se li' non c'e' nessuna foto, la radice
+       della SD, che e' dove finiscono le foto copiate al volo dal PC.
+
+       Il ripiego guarda se le foto ci sono, non se la cartella c'e'. Prima
+       bastava che /sdcard/foto esistesse per non cercare piu' altrove, e
+       finche' la cartella la creava solo l'utente l'una cosa valeva l'altra.
+       Da quando le foto le manda il plugin di Home Assistant la cartella la
+       crea lui: basta svuotarla e lo slideshow resta a mani vuote con tutte
+       le foto nella radice, senza un messaggio che spieghi perche'. */
+    if (!raccogli(s_cfg.folder, v) && strcmp(s_cfg.folder, "/sdcard") != 0) {
+        if (raccogli("/sdcard", v))
+            ESP_LOGW(TAG, "nessuna foto in %s: le prendo da /sdcard", s_cfg.folder);
+    }
     if (s_cfg.shuffle) {
         for (size_t i = v.size(); i > 1; i--) std::swap(v[i - 1], v[esp_random() % i]);
     } else {

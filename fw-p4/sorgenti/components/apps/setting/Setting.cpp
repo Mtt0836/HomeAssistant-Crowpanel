@@ -5,6 +5,7 @@
  */
 
 #include "home_dashboard/net_config.h"
+#include "home_dashboard/batteria.h"
 #include <cmath>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -720,23 +721,21 @@ void AppSettings::euiRefresTask(void *arg)
         }
         bsp_display_unlock();
 
+        /* La batteria nella barra di stato. Il valore e' la nostra stima, non
+           la percentuale del coprocessore: quella segue la tensione, e la
+           tensione sotto carica non e' quella della cella, quindi il numero
+           in alto a destra saltava appena si attaccava o staccava la corrente.
+           Il perche' per esteso sta in cima a home_dashboard/batteria.h.
+
+           Il primo argomento e' il fulmine "in carica": lo accende solo lo
+           stato di carica in corso, come prima (bat_state == 1). */
+        batt_info_t batt;
+        batteria_leggi(&batt);
         bsp_display_lock(0);
-        extern uint32_t adc_voltage;
-        extern uint32_t bat_voltage;
-        extern uint32_t bat_level;
-        extern uint8_t bat_state;
-        extern uint8_t led_state;
-        if (1==bat_state) {
-            if(!app->status_bar->setBatteryPercent(1, bat_level)) {
-                ESP_LOGE(TAG, "Set battery failed");
-            }
+        if(!app->status_bar->setBatteryPercent(batt.stato == BATT_IN_CARICA ? 1 : 0,
+                                               batt.pct)) {
+            ESP_LOGE(TAG, "Set battery failed");
         }
-        else {
-            if(!app->status_bar->setBatteryPercent(0, bat_level)) {
-                ESP_LOGE(TAG, "Set battery failed");
-            }
-        }
-        
         bsp_display_unlock();
         
 

@@ -7,6 +7,8 @@
 #include "net_config.h"
 #include "standby_show.h"
 #include "idle_manager.h"
+#include "batteria.h"
+#include "ota_update.h"
 #include "tts_player.h"
 #include "avviso_ui.h"
 #include "hosted_recovery.h"
@@ -237,9 +239,6 @@ const char *ha_plugin_reset_reason(void)
 
 // -------------------------------------------------------------------- stato
 
-/* Letta dal coprocessore STC8, che il pannello interroga gia' per conto suo. */
-extern "C" void panel_alimentazione(uint32_t *mv, uint8_t *percento, uint8_t *stato);
-
 static void push_state(void)
 {
     if (!s_paired) return;
@@ -249,11 +248,14 @@ static void push_state(void)
     int view = 0;
     ha_config_load_dash(dash, sizeof(dash), &view);
 
-    uint32_t ali_mv = 0;
-    uint8_t  ali_pct = 0, ali_stato = 0;
-    panel_alimentazione(&ali_mv, &ali_pct, &ali_stato);
+    batt_info_t b;
+    batteria_leggi(&b);
+    ota_info_t o;
+    ota_update_stato(&o);
+    char fw[96];
+    ota_update_versione(fw, sizeof(fw));
 
-    char body[512];
+    char body[640];
     snprintf(body, sizeof(body),
              /* "pannello" e non "id": nel protocollo di HA "id" e' gia' il
                 numero progressivo del messaggio, e due chiavi uguali nello
@@ -262,13 +264,27 @@ static void push_state(void)
              "\"schermo\":%s,\"luminosita\":%d,\"dashboard\":\"%s\",\"vista\":%d,"
              "\"acceso_da\":%lld,\"ram_interna\":%u,\"ram_psram\":%u,\"recuperi\":%u,"
              "\"riavvio\":\"%s\","
-             /* Alimentazione. "stato" e' il numero grezzo che manda il
-                coprocessore: cosa significhi non e' documentato da nessuna
-                parte, e inventarsi che 2 vuol dire "in carica" sarebbe un
-                sensore che mente. Lo si pubblica com'e', e appena lo si vede
-                cambiare - staccando la corrente, attaccando una batteria - si
-                sa cosa vuol dire e gli si da' un nome. */
-             "\"alimentazione_mv\":%u,\"alimentazione_pct\":%u,\"alimentazione_stato\":%u}",
+             /* Alimentazione. La percentuale e' la nostra stima dalla curva
+                tensione-carica, non quella del coprocessore - che segue la
+                tensione, e la tensione sotto carica non e' quella della cella.
+                Quella del coprocessore resta pubblicata di fianco, cosi' le
+                due si possono confrontare; il perche' sta in batteria.h.
+
+                "stato" e' ora una parola. Il numero grezzo resta accanto:
+                lo si pubblicava da solo perche' nessuno sapeva cosa volesse
+                dire, poi l'enum e' venuto fuori nell'intestazione del BSP
+                (bsp_stc8h1kxx.h) e il 2 che si vedeva sempre era
+                BAT_CHARGE_FULLY_CHARGED, "piena". Attenzione a come si legge:
+                senza batteria collegata il coprocessore dice "piena" allo
+                stesso modo, perche' da' per piena una carica che non parte. */
+             "\"alimentazione_mv\":%u,\"alimentazione_pct\":%u,\"alimentazione_stato\":%u,"
+             "\"alimentazione\":\"%s\",\"alimentazione_pct_stc8\":%u,"
+             "\"batteria_tarata\":%s,\"batteria_mah\":%u,\"batteria_autonomia_min\":%u,"
+             /* Il firmware in esecuzione e a che punto e' un eventuale
+                aggiornamento. Serve all'archivio dei firmware in Home
+                Assistant per sapere cosa c'e' installato senza chiederlo, e
+                per mostrare la barra mentre scarica. */
+             "\"firmware\":\"%s\",\"ota\":\"%s\",\"ota_pct\":%d,\"ota_in_prova\":%s}",
              id,
              idle_manager_screen_on() ? "true" : "false",
              idle_manager_brightness(),
@@ -277,7 +293,12 @@ static void push_state(void)
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
              hosted_recovery_count(), ha_plugin_reset_reason(),
-             (unsigned)ali_mv, (unsigned)ali_pct, (unsigned)ali_stato);
+             (unsigned)b.mv, (unsigned)b.pct, (unsigned)b.stato_grezzo,
+             batteria_stato_parole(b.stato), (unsigned)b.pct_stc8,
+             b.curva_imparata ? "true" : "false",
+             (unsigned)b.capacita_mah, (unsigned)b.autonomia_min,
+             esc(fw).c_str(), ota_parole(o.stato), o.pct,
+             o.in_prova ? "true" : "false");
     ha_ws_request(body, NULL, NULL);
 }
 
@@ -470,6 +491,20 @@ static void on_command(const cJSON *data, void *ctx)
                 esp_restart();
             }
         }
+    } else if (!strcmp(cmd, "firmware")) {
+        /* L'impronta non e' facoltativa: senza, l'unica verifica rimasta
+           sarebbe quella di ESP-IDF, che dice "e' un firmware" ma non "e'
+           quello che hai mandato". Chi manda il comando la calcola prima di
+           spedire, il pannello la ricalcola sui byte che arrivano. */
+        const cJSON *u = cJSON_GetObjectItem(data, "url");
+        const cJSON *s = cJSON_GetObjectItem(data, "sha256");
+        const cJSON *b = cJSON_GetObjectItem(data, "byte");
+        if (!cJSON_IsString(u) || !cJSON_IsString(s)) {
+            ESP_LOGE(TAG, "comando firmware senza indirizzo o senza impronta: ignorato");
+        } else if (!ota_update_avvia(u->valuestring, s->valuestring,
+                                     cJSON_IsNumber(b) ? (uint32_t)b->valuedouble : 0)) {
+            ESP_LOGE(TAG, "aggiornamento rifiutato in partenza (vedi il motivo qui sopra)");
+        }
     } else if (!strcmp(cmd, "foto")) {
         const cJSON *u = cJSON_GetObjectItem(data, "url");
         const cJSON *n = cJSON_GetObjectItem(data, "nome");
@@ -478,7 +513,10 @@ static void on_command(const cJSON *data, void *ctx)
             l->url = u->valuestring;
             l->nome = nome_pulito(n->valuestring);
             if (l->nome.empty()) l->nome = "foto.jpg";
-            if (xTaskCreate(foto_task, "ha_foto", 8192, l, 3, NULL) != pdPASS) delete l;
+            /* Stack largo: da quando il pannello sa parlare in HTTPS, scaricare
+               una foto puo' portarsi dietro una stretta di mano TLS, che di
+               stack ne vuole alcuni kilobyte in piu' di una in chiaro. */
+            if (xTaskCreate(foto_task, "ha_foto", 12288, l, 3, NULL) != pdPASS) delete l;
         }
     } else if (!strcmp(cmd, "elimina_foto")) {
         const cJSON *n = cJSON_GetObjectItem(data, "nome");
@@ -516,8 +554,19 @@ static void state_task(void *arg)
     (void)arg;
     while (true) {
         /* Si sveglia da sola ogni mezzo minuto e ogni volta che qualcosa
-           cambia, cosi' in HA lo stato non resta indietro dopo un comando. */
-        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(STATE_EVERY_S * 1000));
+           cambia, cosi' in HA lo stato non resta indietro dopo un comando.
+
+           Durante un aggiornamento pero' mezzo minuto non basta: lo
+           scaricamento dura una quarantina di secondi, quindi chi guarda in
+           Home Assistant vedrebbe al massimo un aggiornamento e poi il
+           pannello sparire per il riavvio - indistinguibile da un pannello
+           che si e' piantato. Ogni due secondi la barra si muove davvero.
+
+           Il costo e' trascurabile proprio perche' siamo nel momento peggiore:
+           qualche centinaio di byte ogni due secondi contro i centoquindici
+           kilobyte al secondo dello scaricamento. */
+        int attesa_ms = ota_update_in_corso() ? 2000 : STATE_EVERY_S * 1000;
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(attesa_ms));
         vTaskDelay(pdMS_TO_TICKS(300));      // lascia finire il comando appena dato
         if (!s_paired) {
             /* Riprova a presentarsi: l'integrazione puo' essere stata

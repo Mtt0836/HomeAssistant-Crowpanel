@@ -48,7 +48,7 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = [Platform.SWITCH, Platform.NUMBER, Platform.SENSOR]
+PLATFORMS = [Platform.SWITCH, Platform.NUMBER, Platform.SENSOR, Platform.UPDATE]
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
@@ -239,6 +239,11 @@ async def _registra_servizi(hass: HomeAssistant) -> None:
     # hassfest si arrabbia se lo si fa) e una vista HTTP tutta sua.
     from .foto import registra as registra_foto
     await registra_foto(hass, store)
+
+    # L'archivio dei firmware: le versioni restano dentro Home Assistant, cosi'
+    # tornare a quella di prima e' una scelta e non un recupero d'emergenza.
+    from .firmware import registra as registra_firmware
+    await registra_firmware(hass, store)
 
 
 # -------------------------------------------------------------------- avvio

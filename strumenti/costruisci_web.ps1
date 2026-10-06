@@ -1,10 +1,10 @@
 <#
-  Comprime la pagina dell'editor del pannello (V0.2/web/panel.html) e la mette
+  Comprime la pagina dell'editor del pannello (<progetto>/web/panel.html) e la mette
   dove serve:
-    - V0.2/components/apps/home_dashboard/assets/panel.html.gz
+    - <progetto>/components/apps/home_dashboard/assets/panel.html.gz
       copia di riserva compilata nel firmware (serve un idf.py build per averla
       sul pannello)
-    - V0.2/web/panel.html.gz
+    - <progetto>/web/panel.html.gz
       copia da mettere sulla SD, nella cartella "web": il pannello preferisce
       questa, cosi' si aggiorna la pagina senza riflashare
 
@@ -16,10 +16,14 @@
 param([string] $Sd)
 
 $radice  = Split-Path (Split-Path $PSCommandPath)      # D:\HA_DISPLAY
-$sorgente = Join-Path $radice 'V0.2\web\panel.html'
+# Il progetto attivo in un posto solo: prima 'V0.2' era scritto tre volte qui
+# dentro, e dopo il passaggio a V0.3 lo script comprimeva ancora la pagina
+# vecchia senza dire niente.
+$progetto = 'V0.3'
+$sorgente = Join-Path $radice "$progetto\web\panel.html"
 $uscite = @(
-    (Join-Path $radice 'V0.2\components\apps\home_dashboard\assets\panel.html.gz'),
-    (Join-Path $radice 'V0.2\web\panel.html.gz')
+    (Join-Path $radice "$progetto\components\apps\home_dashboard\assets\panel.html.gz"),
+    (Join-Path $radice "$progetto\web\panel.html.gz")
 )
 
 if (-not (Test-Path $sorgente)) {

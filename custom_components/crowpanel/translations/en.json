@@ -13,9 +13,11 @@
   "options": {
     "step": {
       "init": {
-        "title": "Which panel",
-        "data": {
-          "pannello": "Panel"
+        "title": "CrowPanel panels",
+        "description": "What would you like to do?",
+        "menu_options": {
+          "slideshow": "Slideshow and overlay values",
+          "firmware": "Firmware archive"
         }
       },
       "pannello": {
@@ -40,10 +42,60 @@
         "data_description": {
           "gestito_da_ha": "Clear this and the panel goes back to managing the slideshow itself, from its own web page."
         }
+      },
+      "slideshow": {
+        "title": "Which panel",
+        "data": {
+          "pannello": "Panel"
+        }
+      },
+      "firmware": {
+        "title": "Firmware archive",
+        "description": "Versions are kept here, so going back to the previous one is a choice rather than an emergency recovery.",
+        "menu_options": {
+          "fw_carica": "Upload a new version",
+          "fw_invia": "Send a version to the panel",
+          "fw_elimina": "Remove a version from the archive"
+        }
+      },
+      "fw_carica": {
+        "title": "Upload a firmware",
+        "description": "Pick the application .bin (not the bootloader nor the partition table). Name, version and build date are read from inside the file.",
+        "data": {
+          "file": "Firmware file",
+          "nome": "Name in the archive",
+          "note": "Notes"
+        },
+        "data_description": {
+          "nome": "Leave empty to use the file name.",
+          "note": "To remind you what changed in this version."
+        }
+      },
+      "fw_invia": {
+        "title": "Send a firmware",
+        "description": "The panel downloads it, recomputes its fingerprint and installs it only if they match, then reboots. If the new version fails to stay up and connected to Home Assistant for two minutes, the panel restores the previous one by itself.",
+        "data": {
+          "pannello": "Panel",
+          "firmware": "Version"
+        }
+      },
+      "fw_elimina": {
+        "title": "Remove from the archive",
+        "description": "Deletes the file from Home Assistant. It does not touch the panel. Be careful not to remove the version you would want to go back to.",
+        "data": {
+          "firmware": "Version",
+          "confermo": "I confirm"
+        }
       }
     },
     "abort": {
-      "nessun_pannello": "No panel has introduced itself yet. Power one on and wait a minute."
+      "nessun_pannello": "No panel has introduced itself yet. Power one on and wait a minute.",
+      "archivio_vuoto": "The archive is empty: upload a firmware first.",
+      "fw_caricato": "Uploaded {nome}: version {versione} of {data}, {kb} kB. Fingerprint {sha256}",
+      "fw_rifiutato": "That did not work: {errore}",
+      "fw_mandato": "Sent {nome} (version {versione}). The panel downloads, verifies and reboots: it takes a few tens of seconds.",
+      "fw_eliminato": "{nome} removed from the archive.",
+      "fw_non_eliminato": "Nothing was deleted: the confirmation was missing."
     }
   },
   "entity": {
@@ -82,8 +134,32 @@
       "alimentazione_pct": {
         "name": "Charge"
       },
+      "alimentazione": {
+        "name": "Power",
+        "state": {
+          "sconosciuto": "Unknown",
+          "in carica": "Charging",
+          "carica": "Charged",
+          "a batteria": "On battery",
+          "errore": "Error"
+        }
+      },
+      "batteria_autonomia_min": {
+        "name": "Runtime left"
+      },
+      "batteria_mah": {
+        "name": "Measured capacity"
+      },
+      "alimentazione_pct_stc8": {
+        "name": "Charge per coprocessor"
+      },
       "alimentazione_stato": {
         "name": "Power state (raw)"
+      }
+    },
+    "update": {
+      "firmware_update": {
+        "name": "Firmware"
       }
     }
   }

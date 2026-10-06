@@ -11,6 +11,8 @@
 #include "esp_err.h"
 #include "esp_log.h"
 #include "esp_http_client.h"
+#include "esp_crt_bundle.h"
+#include "ha_http.h"
 #include "cJSON.h"
 #include "bsp_board_extra.h"      // bsp_extra_player_init(), audio_player_play()
 #include "audio_player.h"
@@ -56,6 +58,12 @@ static void tts_task(void *arg)
     char *req_str = cJSON_PrintUnformatted(req); cJSON_Delete(req);
 
     esp_http_client_config_t cfg = {}; cfg.url=get_url; cfg.method=HTTP_METHOD_POST;
+    /* Home Assistant dietro HTTPS: il certificato indicato dall'utente, o le
+       autorita' pubbliche. Stesso criterio del WebSocket. */
+    if (!strncmp(get_url, "https://", 8)) {
+        const char *ca = ha_tls_ca();
+        if (ca) cfg.cert_pem = ca; else cfg.crt_bundle_attach = esp_crt_bundle_attach;
+    }
     esp_http_client_handle_t c = esp_http_client_init(&cfg);
     esp_http_client_set_header(c,"Authorization",bearer);
     esp_http_client_set_header(c,"Content-Type","application/json");
@@ -111,6 +119,10 @@ static void tts_task(void *arg)
         ESP_LOGW(TAG, "l'audio non sta su Home Assistant: lo scarico senza mandare il permesso");
 
     esp_http_client_config_t dc = {}; dc.url=scarica;
+    if (!strncmp(scarica, "https://", 8)) {
+        const char *ca = ha_tls_ca();
+        if (ca) dc.cert_pem = ca; else dc.crt_bundle_attach = esp_crt_bundle_attach;
+    }
     esp_http_client_handle_t dh = esp_http_client_init(&dc);
     if (nostro) esp_http_client_set_header(dh,"Authorization",bearer);
     FILE *of=fopen(outpath,"wb");
@@ -164,7 +176,10 @@ void tts_player_say(const char *msg)
     /* La copia la libera il task appena creato, in tutte le sue vie d'uscita.
        Ma se il task non nasce nessuno la liberera' mai: qui ci pensa chi ha
        chiamato. */
-    if (xTaskCreate(tts_task, "tts", 6144, copy, 4, NULL) != pdPASS) {
+    /* Stack largo: da quando il pannello sa parlare in HTTPS, ogni chiamata
+       a Home Assistant puo' portarsi dietro una stretta di mano TLS, che
+       di stack ne vuole alcuni kilobyte in piu' di una in chiaro. */
+    if (xTaskCreate(tts_task, "tts", 10240, copy, 4, NULL) != pdPASS) {
         ESP_LOGE(TAG, "niente memoria per il task della voce");
         free(copy);
     }

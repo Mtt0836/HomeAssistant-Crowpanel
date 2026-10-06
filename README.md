@@ -48,6 +48,9 @@ che non e' montato di serie.
   - [Lo slideshow](#lo-slideshow)
   - [La pagina web del pannello](#la-pagina-web-del-pannello)
   - [Le impostazioni sul pannello](#le-impostazioni-sul-pannello)
+  - [Aggiornare il firmware da Home Assistant](#aggiornare-il-firmware-da-home-assistant)
+  - [Esplora: file, testi e foto](#esplora-file-testi-e-foto)
+  - [La batteria](#la-batteria)
   - [La console seriale](#la-console-seriale)
 - [Cosa sa disegnare](#cosa-sa-disegnare)
 - [Compilare da sorgenti](#compilare-da-sorgenti)
@@ -93,7 +96,7 @@ Collega il pannello al PC con il cavo USB-C. Sul PC compare una porta seriale
 ```bash
 esptool.py --chip esp32p4 -p PORTA -b 460800 --before default_reset --after hard_reset \
   write_flash --flash_mode dio --flash_size 16MB --flash_freq 80m \
-  0x2000 bootloader.bin 0x8000 partition-table.bin 0x10000 esp_brookesia_demo.bin
+  0x2000 bootloader.bin 0x8000 partition-table.bin 0x10000 ota_data_initial.bin 0x20000 HA_Display.bin
 ```
 
 Su Windows con PowerShell è la stessa riga, con `` ` `` al posto di `\` per
@@ -231,6 +234,80 @@ prima volta: è normale e riguarda solo la tua rete di casa.
 - **Sicurezza** — PIN, password della pagina web, e *Impostazioni iniziali*
   (cancella tutto e riparte come appena uscito dalla scatola).
 
+### Aggiornare il firmware da Home Assistant
+
+Dalla seconda volta in poi il pannello si aggiorna **senza cavo**. Il `.bin` si
+carica dal browser in *Impostazioni → Dispositivi e servizi → CrowPanel →
+Configura → Archivio dei firmware*, e da lì si manda al pannello.
+
+Le versioni restano dentro Home Assistant, e questo è il punto: la domanda che
+viene dopo un aggiornamento non è "come aggiorno" ma "come torno indietro".
+Con le versioni di prima ancora lì, tornare è una scelta.
+
+Nella pagina del dispositivo compare un **Firmware** con "installata 0.3.2,
+disponibile 0.3.3" e il pulsante *Installa*, con la barra di avanzamento
+durante lo scaricamento. È lo stesso posto e lo stesso aspetto degli
+aggiornamenti di Home Assistant: non c'è niente da imparare.
+
+**Due reti di sicurezza, e vale la pena sapere che ci sono.**
+
+Di ogni firmware si calcola un'impronta SHA-256 quando lo si carica, e la si
+ricalcola quando parte verso il pannello; il pannello la ricalcola una terza
+volta sui byte man mano che arrivano. Se non coincidono butta l'immagine e il
+bootloader non la vede nemmeno.
+
+Un firmware appena installato parte **in prova** e diventa definitivo solo dopo
+due minuti in piedi e collegato a Home Assistant. Se si riavvia prima — crash,
+avvii a vuoto, rete che non sale — il pannello rimette da solo quello di prima.
+Un aggiornamento via rete che può murare un dispositivo appeso al muro non vale
+la pena di esistere.
+
+### Esplora: file, testi e foto
+
+Un'app sul pannello e una sezione nella pagina web per vedere cosa c'è sulla
+scheda SD e in memoria.
+
+Sul **pannello** si guarda: elenco, spazio libero, i file di testo (csv, txt,
+ini, cfg, json, log, yaml…) si leggono a pagine, le foto si aprono. C'è un
+tasto per passare a un font a larghezza fissa, che serve quando le colonne di
+un csv devono incolonnarsi.
+
+Nella **pagina web** si fa: scaricare un file sul computer, caricarne uno,
+correggere un file di testo e salvarlo. Un pannello appeso al muro non ha dove
+mettere le cose né da dove prenderle — quelle operazioni hanno senso solo dove
+c'è un computer dall'altra parte.
+
+Si può anche cancellare, con la X in fondo alla riga, che chiede conferma
+mostrando il nome di quello che sta per sparire. Solo file e cartelle vuote.
+
+La pagina web mostra anche la memoria di configurazione (NVS). I segreti — il
+permesso di Home Assistant, la chiave privata del certificato, le impronte di
+password e PIN — si vede che esistono e quanto sono grandi, mai il valore.
+
+### La batteria
+
+Se al pannello si collega una batteria al litio, la percentuale che arriva in
+Home Assistant **non** è quella del coprocessore sulla scheda. Quella fa una
+mappa lineare da 3,5 a 4,2 V, e sbaglia due volte: la curva di una litio non è
+una retta — fra 3,9 e 3,6 V ci sta l'80% della capacità — e 4,2 V è la tensione
+di *fine carica*, non quella di una cella piena a riposo. Risultato: una cella
+piena resta all'87% per sempre.
+
+Il pannello se la calcola su una curva a 21 punti, e **la curva se la impara
+da solo**. Manca un sensore di corrente, ma non serve: a riposo il consumo è
+costante, e con consumo costante il tempo *è* la misura della carica
+consumata. Una scarica completa registrata minuto per minuto dà quindi la
+curva vera di quella cella su quella scheda. Finché non l'ha imparata usa una
+tabella standard.
+
+Misura da sé anche due cose che falsano la lettura: di quanto la carica gonfia
+la tensione, e di quanto la abbassa lo schermo acceso (su questo pannello sono
+163 mV).
+
+Il registro finisce in `/sdcard/batteria.csv` e si scarica dalla pagina web
+(`/api/batteria.csv`): l'autotaratura non è una scatola chiusa, i conti si
+possono rifare a mano.
+
 ### La console seriale
 
 A 115200 baud sulla stessa porta da cui esce il log. `help` elenca tutto. I
@@ -245,6 +322,9 @@ più utili:
 | `dash <nome> [vista]` | sceglie la dashboard da mostrare |
 | `fw` | versione del firmware del C6 |
 | `tap x y` · `drag x1 y1 x2 y2` | tocco finto, per provare l'interfaccia dal PC |
+| `mostra <file>` | stampa un file sulla seriale (per portarselo sul computer) |
+| `batteria` | tensione, stima, stato della taratura |
+| `ota <url> <sha256>` | aggiorna il firmware da un indirizzo, senza Home Assistant |
 | `factory cancella` | cancella tutto e riparte da zero |
 
 ---

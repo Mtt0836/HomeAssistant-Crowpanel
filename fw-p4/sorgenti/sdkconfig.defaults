@@ -231,3 +231,29 @@ CONFIG_LV_USE_PNG=y
 CONFIG_LV_USE_FS_POSIX=y
 CONFIG_LV_FS_POSIX_LETTER=83
 CONFIG_LV_FS_POSIX_PATH=""
+
+# Ritorno indietro automatico dopo un aggiornamento via rete.
+#
+# Con due slot OTA il bootloader puo' fare una cosa che prima era impossibile:
+# avviare un firmware nuovo "in prova" e, se quello non conferma di funzionare,
+# rimettere il precedente da solo al riavvio successivo. La conferma la da'
+# ota_update.cpp, e non la da' subito: pretende che il pannello resti in piedi
+# E collegato a Home Assistant per due minuti. Un firmware che parte ma non
+# riesce piu' a parlare con HA, da un pannello appeso al muro, e' indistinguibile
+# da uno che va in crash.
+#
+# Senza questo interruttore il primo aggiornamento sbagliato costringerebbe a
+# staccare il pannello dalla parete e riflasharlo via USB. Un aggiornamento via
+# rete che puo' murare il dispositivo non vale la pena di esistere.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+
+# Font a larghezza fissa per il visualizzatore di testo.
+#
+# E' gia' dentro LVGL (unscii), quindi non c'e' nessun asset da generare: basta
+# accenderlo. Serve ai file dove le colonne devono incolonnarsi - il registro
+# della batteria, i log, gli ini - che con un font proporzionale diventano
+# illeggibili.
+#
+# Copre il solo ASCII: un file con lettere accentate si guarda con il font
+# normale, e il visualizzatore ha un tasto per passare dall'uno all'altro.
+CONFIG_LV_FONT_UNSCII_16=y

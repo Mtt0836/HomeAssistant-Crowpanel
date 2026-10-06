@@ -38,7 +38,7 @@ static const char *FILE_CFG[] = {
    consegna qualcosa. Il permesso apre Home Assistant, la chiave privata
    permette di spacciarsi per il pannello, le impronte si possono provare a
    forza bruta con calma su un computer potente. */
-static bool e_segreto(const char *ns, const char *chiave)
+bool backup_e_segreto(const char *ns, const char *chiave)
 {
     if (!strcmp(ns, "webcert")) return true;             // certificato e chiave privata
     if (!strcmp(ns, "webauth")) return true;             // impronte delle password
@@ -198,7 +198,7 @@ static cJSON *leggi_nvs(bool con_segreti, cJSON *omessi)
         nvs_entry_info(it, &info);
 
         if (e_nostro(info.namespace_name)) { e = nvs_entry_next(&it); continue; }
-        if (!con_segreti && e_segreto(info.namespace_name, info.key)) {
+        if (!con_segreti && backup_e_segreto(info.namespace_name, info.key)) {
             char nome[64];
             snprintf(nome, sizeof(nome), "%s/%s", info.namespace_name, info.key);
             cJSON_AddItemToArray(omessi, cJSON_CreateString(nome));
@@ -538,7 +538,7 @@ bool backup_autoprova(char *out, size_t out_sz)
             if (!sp->string) continue;
             const cJSON *v;
             cJSON_ArrayForEach(v, sp) {
-                if (v->string && e_segreto(sp->string, v->string)) {
+                if (v->string && backup_e_segreto(sp->string, v->string)) {
                     ok = false;
                     guaio = "il file in chiaro contiene dei segreti!";
                 }

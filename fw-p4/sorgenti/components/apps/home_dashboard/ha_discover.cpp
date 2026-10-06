@@ -22,7 +22,7 @@ extern "C" void home_dashboard_reconnect(void);
 
 // ------------------------------------------------------------------ utilita'
 
-/* "http://192.168.1.167" -> "ws://192.168.1.167/api/websocket"
+/* "http://192.168.1.20" -> "ws://192.168.1.20/api/websocket"
 
    L'indirizzo che Home Assistant annuncia e' quello del browser: per il
    WebSocket cambia lo schema e si aggiunge la coda. E' l'unica cosa che

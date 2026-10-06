@@ -1,4 +1,5 @@
 --flash_mode dio --flash_freq 80m --flash_size 16MB
 0x2000 bootloader.bin
 0x8000 partition-table.bin
-0x10000 esp_brookesia_demo.bin
+0x10000 ota_data_initial.bin
+0x20000 HA_Display.bin

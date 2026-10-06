@@ -1,6 +1,7 @@
 #include "ha_http.h"
 #include "ha_config.h"
 #include "ha_token.h"
+#include <stdlib.h>
 
 #include <string.h>
 #include <stdio.h>
@@ -70,7 +71,19 @@ int ha_http_post_form(const char *url, const char *body, char *resp, size_t resp
     c.url = url;
     c.method = HTTP_METHOD_POST;
     c.timeout_ms = 8000;
-    if (!strncmp(url, "https://", 8)) c.crt_bundle_attach = esp_crt_bundle_attach;
+    /* Il certificato dell'utente viene prima del pacchetto pubblico.
+
+       Questa riga agganciava sempre e solo il pacchetto, e con un Home
+       Assistant dal certificato autofirmato produceva un guasto a scoppio
+       ritardato: il WebSocket si collegava (lui il certificato lo guardava),
+       ma il rinnovo del permesso passa di qui e falliva. Il pannello
+       funzionava per mezz'ora e poi perdeva Home Assistant, senza che niente
+       nel momento del guasto facesse pensare ai certificati. */
+    if (!strncmp(url, "https://", 8)) {
+        const char *ca = ha_tls_ca();
+        if (ca) c.cert_pem = ca;
+        else    c.crt_bundle_attach = esp_crt_bundle_attach;
+    }
 
     esp_http_client_handle_t h = esp_http_client_init(&c);
     if (!h) return -1;
@@ -108,6 +121,12 @@ int ha_http_get_auth(const char *url, char *resp, size_t resp_sz)
     cfg.url = url;
     cfg.method = HTTP_METHOD_GET;
     cfg.timeout_ms = 8000;
+    /* Calendario e registro si chiedono all'API HTTP: stesso criterio. */
+    if (!strncmp(url, "https://", 8)) {
+        const char *ca = ha_tls_ca();
+        if (ca) cfg.cert_pem = ca;
+        else    cfg.crt_bundle_attach = esp_crt_bundle_attach;
+    }
     esp_http_client_handle_t c = esp_http_client_init(&cfg);
     if (!c) return -1;
     esp_http_client_set_header(c, "Authorization", bearer);
@@ -124,4 +143,33 @@ int ha_http_get_auth(const char *url, char *resp, size_t resp_sz)
     memset(bearer, 0, sizeof(bearer));
     memset(token, 0, sizeof(token));
     return codice;
+}
+
+// ------------------------------------------------------------------ certificato
+
+static char *s_ca = NULL;
+static bool  s_ca_letto = false;
+
+const char *ha_tls_ca(void)
+{
+    if (!s_ca_letto) {
+        s_ca_letto = true;
+        char *p = (char *)malloc(HA_CA_MAX);
+        if (p && ha_config_load_ca(p, HA_CA_MAX) && p[0]) {
+            s_ca = p;
+            ESP_LOGI(TAG, "uso il certificato indicato dall'utente (%u byte)",
+                     (unsigned)strlen(p));
+        } else {
+            free(p);
+            s_ca = NULL;
+        }
+    }
+    return s_ca;
+}
+
+void ha_tls_ricarica(void)
+{
+    free(s_ca);
+    s_ca = NULL;
+    s_ca_letto = false;
 }

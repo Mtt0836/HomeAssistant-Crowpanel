@@ -37,6 +37,23 @@ bool ha_config_save_dash(const char *path, int view);
 // voce ("tts.piper", "tts.google_it_it", ...). Era scritto dentro il codice, e
 // chi non aveva Piper si ritrovava la voce muta senza che niente lo dicesse.
 // Vuoto in memoria = si usa il valore predefinito.
+/* Il certificato di chi non usa un'autorita' pubblica.
+
+   Con "wss://" il pannello controlla che il certificato di Home Assistant sia
+   firmato da un'autorita' che conosce: il pacchetto compilato dentro ESP-IDF
+   copre quelle pubbliche, quindi Nabu Casa, Let's Encrypt e simili funzionano
+   senza fare niente.
+
+   Chi invece si e' fatto il certificato da se' - che e' la norma per un HA in
+   casa dietro HTTPS - ha un certificato che nessuna autorita' pubblica ha
+   firmato, e il collegamento verrebbe rifiutato. La soluzione non e'
+   smettere di controllare: e' dire al pannello di chi fidarsi, incollandogli
+   quel certificato. Vuoto = si usano le autorita' pubbliche. */
+#define HA_CA_MAX 2600
+bool ha_config_load_ca(char *pem, size_t sz);     // false se non c'e'
+bool ha_config_save_ca(const char *pem);          // NULL o vuoto = toglilo
+bool ha_config_has_ca(void);
+
 #define HA_TTS_MAX 64
 void ha_config_load_tts(char *id, size_t sz);
 bool ha_config_save_tts(const char *id);

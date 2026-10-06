@@ -89,7 +89,21 @@ esp_err_t bsp_sdcard_mount(void)
 #else
         .format_if_mount_failed = false,
 #endif
-        .max_files = 5,
+        /* Cinque era il valore di Elecrow, e bastava a un esempio che dalla
+           scheda leggeva solo musica. Qui sulla SD ci vanno in contemporanea:
+           le foto dello slideshow, la cache delle immagini scaricate da Home
+           Assistant, le immagini che LVGL apre da se' per il decoder PNG, il
+           file audio in riproduzione, il registro della batteria, e la pagina
+           web di riserva. Sono tutti di passaggio, ma non e' difficile che
+           cinque capitino insieme.
+
+           E quando capitano, la fopen fallisce e il guasto non assomiglia a
+           un tetto raggiunto: assomiglia a una scheda SD rotta, perche' si
+           ferma la prima cosa che chiede un file - tipicamente lo slideshow -
+           mentre tutto il resto continua a funzionare. Dodici danno margine;
+           ogni posto in piu' costa qualche centinaio di byte di RAM interna,
+           quindi una dozzina si paga con pochi kilobyte. */
+        .max_files = 12,
         .allocation_unit_size = 64 * 1024
     };
 

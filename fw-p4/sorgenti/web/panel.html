@@ -6,7 +6,7 @@
 <!--
   Pagina di configurazione del pannello.
   Una pagina sola, senza librerie esterne: il pannello puo' non avere internet.
-  Sorgente: V0.2/web/panel.html - dopo averla modificata lancia
+  Sorgente: V0.3/web/panel.html - dopo averla modificata lancia
   strumenti/costruisci_web.bat, che la comprime per la SD e per il firmware.
 
   L'editor disegna la stessa griglia a 12 colonne che usa il pannello: si
@@ -51,6 +51,36 @@
   .tabs button.on{background:var(--accent);border-color:var(--accent);color:#fff}
   .bar{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center}
   .hint{color:var(--soft);font-size:13px;margin:8px 0 0}
+  /* esploratore dei file: righe strette, il nome che si allunga e la
+     dimensione allineata a destra perche' si possano confrontare a occhio */
+  .fxrow{display:flex;gap:10px;align-items:center;padding:6px 8px;
+         border-bottom:1px solid var(--line)}
+  .fxrow:last-child{border-bottom:0}
+  .fxrow .n{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;
+            white-space:nowrap}
+  .fxrow .d{color:var(--soft);font-size:13px;font-variant-numeric:tabular-nums;
+            white-space:nowrap}
+  .fxrow a{color:var(--accent);text-decoration:none}
+  .fxrow a:hover{text-decoration:underline}
+  .fxdir{font-weight:600}
+  .fxseg{color:var(--soft)}
+  .fxtab{font-size:13px;width:100%;border-collapse:collapse}
+  .fxtab td,.fxtab th{padding:4px 8px;border-bottom:1px solid var(--line);
+                      text-align:left;vertical-align:top}
+  .fxtab th{color:var(--soft);font-weight:600}
+  .fxtab .v{font-family:ui-monospace,Consolas,monospace;word-break:break-all}
+  .fxseg2{color:var(--soft);font-style:italic}
+  /* La X di cancellazione: smorzata finche' non ci si passa sopra, cosi' non
+     attira il dito mentre si cerca altro. */
+  .fxx{color:var(--soft);text-decoration:none;padding:0 6px;font-size:15px;
+       border-radius:6px}
+  .fxx:hover{color:#fff;background:var(--warn)}
+  /* L'editor: a larghezza fissa e SENZA andare a capo, cosi' le colonne di un
+     csv restano incolonnate. Si scorre di lato come in un foglio di calcolo. */
+  #fx-ed{width:100%;height:50vh;min-height:280px;font:13px/1.4 ui-monospace,
+         Consolas,Menlo,monospace;white-space:pre;overflow:auto;tab-size:4;
+         border:1px solid var(--line);border-radius:8px;padding:10px;
+         background:#fbfcfd;color:var(--txt)}
   .gate{max-width:420px;margin:60px auto}
 
   /* ---- scelta dei valori dello slideshow ---- */
@@ -155,6 +185,7 @@
       <button id="tab-ha"   hidden onclick="showTab('ha')">Home Assistant</button>
       <button id="tab-acc"  hidden onclick="showTab('acc')">Accessi</button>
       <button id="tab-bak"  hidden onclick="showTab('bak')">Salvataggio</button>
+      <button id="tab-file" hidden onclick="showTab('file')">File</button>
     </div>
 
     <div id="pane-dash">
@@ -220,6 +251,19 @@
         <input id="ha-dash" placeholder="lovelace">
         <label for="ha-view">Vista (numero)</label>
         <input id="ha-view" type="number" min="0" value="0">
+        <label for="ha-ca">Certificato di Home Assistant</label>
+        <textarea id="ha-ca" rows="4" placeholder="-----BEGIN CERTIFICATE-----"></textarea>
+        <p class="hint" id="ha-ca-stato"></p>
+        <p class="hint">Serve solo se l&rsquo;indirizzo comincia per
+           <code>wss://</code> <em>e</em> il certificato di Home Assistant te lo
+           sei fatto da te, che &egrave; il caso normale di un HA in casa dietro
+           HTTPS. Con Nabu Casa, Let&rsquo;s Encrypt o un&rsquo;altra
+           autorit&agrave; pubblica lascia vuoto: il pannello le riconosce
+           gi&agrave;.<br>
+           Incolla qui il certificato (il file <code>.pem</code> o
+           <code>.crt</code>, dal <code>-----BEGIN</code> al <code>-----END</code>).
+           Scrivi un trattino solo per toglierlo. Vale dalla prossima
+           connessione.</p>
         <label for="ha-tts">Motore vocale</label>
         <input id="ha-tts" placeholder="tts.piper">
         <p class="hint">Quale voce di Home Assistant legge gli avvisi ad alta
@@ -300,6 +344,57 @@
            rimesso anche le password, rientrerai con quelle del salvataggio.</p>
       </div></div>
     </div>
+
+    <div id="pane-file" hidden>
+      <div class="card"><h2>File sul pannello</h2><div class="body">
+        <p id="fx-radici"></p>
+        <p class="hint" id="fx-dove"></p>
+        <div id="fx-elenco"></div>
+        <p class="hint" id="fx-spazio"></p>
+        <p class="hint">Niente si cancella da qui, ed e&rsquo; voluto: da un
+           elenco su una pagina web si clicca sulla riga sbagliata con una
+           facilita&rsquo; che non ha pari, e qui non c&rsquo;e&rsquo; nessun
+           cestino. Per fare pulizia si estrae la scheda, dove c&rsquo;e&rsquo;
+           un sistema operativo che chiede conferma.</p>
+      </div></div>
+
+      <div class="card" id="fx-ed-box" hidden><h2 id="fx-ed-nome">File</h2><div class="body">
+        <textarea id="fx-ed" spellcheck="false" autocapitalize="off"
+                  autocorrect="off"></textarea>
+        <p>
+          <button class="primary" onclick="fxSalva()">Salva</button>
+          <button onclick="fxChiudiEd()">Chiudi</button>
+          <span class="hint" id="fx-ed-stato"></span>
+        </p>
+        <p class="hint">Il file viene riscritto per intero. Il pannello non se
+           ne accorge da solo: <code>standby.json</code> e
+           <code>overrides.json</code> li rilegge al riavvio. Un file
+           completamente vuoto non si puo&rsquo; salvare da qui &mdash; lasciaci
+           almeno una riga.</p>
+      </div></div>
+
+      <div class="card"><h2>Metti un file sulla SD</h2><div class="body">
+        <input id="fx-file" type="file">
+        <p><button class="primary" onclick="fxCarica()">Carica</button>
+           <span class="hint" id="fx-su-esito"></span></p>
+        <p class="hint">Finisce nella cartella che stai guardando, e solo sulla
+           scheda SD. In <code>/spiffs</code> c&rsquo;e&rsquo; la configurazione
+           del pannello: sovrascriverla da qui vorrebbe dire perdere
+           l&rsquo;indirizzo di Home Assistant con un clic, e per quella
+           c&rsquo;e&rsquo; <em>Rimetti una configurazione</em>.</p>
+      </div></div>
+
+      <div class="card"><h2>Memoria di configurazione</h2><div class="body">
+        <p><button onclick="fxNvs()">Leggi la NVS</button></p>
+        <div id="fx-nvs"></div>
+        <p class="hint">Sola lettura. Dei segreti &mdash; il permesso di Home
+           Assistant, la chiave privata del certificato, le impronte di password
+           e PIN &mdash; si vede che esistono e quanto sono grandi, non il
+           valore: quel permesso apre tutta la casa, e su una pagina web non ci
+           va. E&rsquo; la stessa regola del salvataggio in chiaro, e
+           l&rsquo;elenco di cosa sia segreto e&rsquo; lo stesso.</p>
+      </div></div>
+    </div>
   </section>
 </main>
 <footer id="foot"></footer>
@@ -351,6 +446,7 @@ async function session() {
   $('tab-acc').hidden = state.role !== 'admin';
   $('tab-slide').hidden = state.role !== 'admin';
   $('tab-bak').hidden   = state.role !== 'admin';
+  $('tab-file').hidden  = state.role !== 'admin';
   if (logged) {
     load();
     if (state.role === 'admin') { loadHA(); guestState(); }
@@ -438,12 +534,223 @@ async function rimetti() {
 }
 
 function showTab(which) {
-  for (const t of ['dash', 'slide', 'ha', 'acc', 'bak']) {
+  for (const t of ['dash', 'slide', 'ha', 'acc', 'bak', 'file']) {
     $('pane-' + t).hidden = t !== which;
     $('tab-' + t).classList.toggle('on', t === which);
   }
   if (which === 'dash') fit();
   if (which === 'slide') loadSlide();
+  if (which === 'file' && !fxDove) fxVai('/sdcard');
+}
+
+// ------------------------------------------------------------------ file
+
+let fxDove = '';
+
+/* I nomi dei file e i valori della NVS vengono da fuori - da una scheda SD che
+   ha scritto chissa' chi, da una configurazione importata - e finiscono dentro
+   innerHTML. Un file che si chiamasse "<img onerror=...>.jpg" eseguirebbe
+   codice in questa pagina, che e' la pagina da cui si comanda il pannello. */
+function esc(s) {
+  return String(s === null || s === undefined ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function fxMisura(n) {
+  if (n < 1024) return n + ' B';
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' kB';
+  if (n < 1024 * 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + ' MB';
+  // una scheda da 32 GB mostrata in megabyte non si legge: 30436.5 MB
+  return (n / 1024 / 1024 / 1024).toFixed(2) + ' GB';
+}
+
+function fxQuando(unix) {
+  if (!unix) return '';
+  const d = new Date(unix * 1000);
+  if (d.getFullYear() < 2024) return '';     // orologio non ancora sincronizzato
+  const p = (x) => String(x).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) +
+         ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+}
+
+async function fxVai(percorso) {
+  try {
+    const d = await (await api('/api/file?percorso=' + encodeURIComponent(percorso))).json();
+    fxDove = d.percorso;
+    fxDisegna(d);
+  } catch (e) { say(e.message, 'err'); }
+}
+
+/* Il percorso di una riga sta in un attributo data-p, e a raccogliere i clic
+   c'e' un ascoltatore solo sul contenitore. Non si costruiscono onclick
+   incollandoci dentro il nome del file: un file che si chiamasse con un apice
+   spezzerebbe il codice, e questa e' la pagina da cui si comanda il pannello.
+   I dati restano dati. */
+function fxClick(ev) {
+  const x = ev.target.closest('[data-x]');
+  if (x) { ev.preventDefault(); fxElimina(x.getAttribute('data-x')); return; }
+  const t = ev.target.closest('[data-t]');
+  if (t) { ev.preventDefault(); fxApri(t.getAttribute('data-t')); return; }
+  const a = ev.target.closest('[data-p]');
+  if (!a) return;
+  ev.preventDefault();
+  fxVai(a.getAttribute('data-p'));
+}
+
+/* Quali file si aprono come testo. Lo stesso elenco ce l'ha il visualizzatore
+   sul pannello: due elenchi che devono dire la stessa cosa sono due elenchi
+   che prima o poi diranno cose diverse, ma qui uno sta in C e l'altro in
+   JavaScript e non c'e' modo di averne uno solo. Se se ne aggiunge uno, va
+   aggiunto in tutti e due (esplora_app/EsploraApp.cpp, e_testo). */
+const FX_TESTO = ['.csv', '.txt', '.ini', '.cfg', '.conf', '.json', '.log',
+                  '.md', '.yaml', '.yml', '.xml', '.html', '.css', '.js', '.py'];
+
+function fxEtesto(nome) {
+  const p = nome.lastIndexOf('.');
+  return p >= 0 && FX_TESTO.includes(nome.slice(p).toLowerCase());
+}
+
+async function fxApri(percorso) {
+  try {
+    const t = await (await api('/api/scarica?percorso=' + encodeURIComponent(percorso))).text();
+    $('fx-ed').value = t;
+    $('fx-ed-nome').textContent = percorso;
+    $('fx-ed-stato').textContent = t.length + ' caratteri';
+    $('fx-ed-box').hidden = false;
+    $('fx-ed-box').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  } catch (e) { say(e.message, 'err'); }
+}
+
+async function fxSalva() {
+  const percorso = $('fx-ed-nome').textContent;
+  const testo = $('fx-ed').value;
+  if (!testo.length) {
+    say('Un file vuoto non si puo’ salvare da qui: lasciaci almeno una riga.', 'err');
+    return;
+  }
+  if (!confirm('Riscrivo ' + percorso + ' per intero. Procedo?')) return;
+  try {
+    const r = await api('/api/carica?percorso=' + encodeURIComponent(percorso),
+                        { method: 'POST', body: new Blob([testo]) });
+    const d = await r.json();
+    $('fx-ed-stato').textContent = d.messaggio + ' (' + testo.length + ' caratteri)';
+    say('Salvato ' + percorso, 'ok');
+    fxVai(fxDove);
+  } catch (e) { say(e.message, 'err'); }
+}
+
+async function fxElimina(percorso) {
+  /* La domanda dice il nome: "sei sicuro?" da solo non fa decidere niente,
+     perche' non dice su cosa si sta decidendo. E qui non c'e' nessun cestino
+     da cui ripescare. */
+  if (!confirm('Cancello\n\n' + percorso + '\n\nNon si torna indietro.')) return;
+  try {
+    const r = await api('/api/elimina?percorso=' + encodeURIComponent(percorso),
+                        { method: 'POST' });
+    const d = await r.json();
+    say(d.messaggio + ': ' + percorso, 'ok');
+    if (percorso === $('fx-ed-nome').textContent) fxChiudiEd();
+    fxVai(fxDove);
+  } catch (e) { say(e.message, 'err'); }
+}
+
+function fxChiudiEd() {
+  $('fx-ed-box').hidden = true;
+  $('fx-ed').value = '';
+}
+
+function fxDisegna(d) {
+  // le radici, piu' il percorso a pezzi cliccabili per risalire
+  $('fx-radici').innerHTML = d.radici.map((r) =>
+    '<button data-p="' + esc(r) + '">' + esc(r) + '</button>').join(' ');
+
+  const pezzi = d.percorso.split('/').filter((x) => x);
+  let via = '', briciole = [];
+  for (const p of pezzi) {
+    via += '/' + p;
+    briciole.push('<a href="#" data-p="' + esc(via) + '">' + esc(p) + '</a>');
+  }
+  $('fx-dove').innerHTML = briciole.join('<span class="fxseg"> / </span>');
+
+  let html = '';
+  if (pezzi.length > 1) {
+    const su = '/' + pezzi.slice(0, -1).join('/');
+    html += '<div class="fxrow"><span class="n"><a href="#" class="fxdir" data-p="' +
+            esc(su) + '">.. (sopra)</a></span></div>';
+  }
+
+  for (const v of d.voci) {
+    const dove = d.percorso.replace(/\/$/, '') + '/' + v.nome;
+    if (v.cartella) {
+      html += '<div class="fxrow"><span class="n"><a href="#" class="fxdir" data-p="' +
+              esc(dove) + '">' + esc(v.nome) + '/</a></span>' +
+              '<span class="d">cartella</span></div>';
+    } else {
+      /* Un file di testo si apre nell'editor cliccando il nome, e si scarica
+         con il link di fianco: sono due cose diverse e meritano due comandi
+         diversi. Gli altri file si possono solo scaricare, quindi il nome
+         stesso e' il collegamento. */
+      const giu = '<a href="/api/scarica?percorso=' + esc(encodeURIComponent(dove)) + '">';
+      const nome = fxEtesto(v.nome)
+        ? '<a href="#" data-t="' + esc(dove) + '">' + esc(v.nome) + '</a>' +
+          '<span class="d"> ' + giu + '⬇</a></span>'
+        : giu + esc(v.nome) + '</a>';
+      html += '<div class="fxrow"><span class="n">' + nome + '</span>' +
+              '<span class="d">' + fxQuando(v.quando) + '</span>' +
+              '<span class="d">' + fxMisura(v.byte) + '</span>' +
+              '<a href="#" class="fxx" title="Elimina" data-x="' + esc(dove) +
+              '">✕</a></div>';
+    }
+  }
+  if (!d.voci.length) html += '<p class="hint">Qui non c’e’ niente.</p>';
+  if (d.troncato) html += '<p class="hint">Elenco troppo lungo: mostrate solo le prime voci.</p>';
+  $('fx-elenco').innerHTML = html;
+
+  $('fx-spazio').textContent = (d.spazio_totale)
+    ? fxMisura(d.spazio_libero) + ' liberi su ' + fxMisura(d.spazio_totale)
+    : '';
+}
+
+async function fxCarica() {
+  const f = $('fx-file').files[0];
+  if (!f) { say('Scegli un file.', 'err'); return; }
+  if (!fxDove.startsWith('/sdcard')) {
+    say('Si carica solo sulla scheda SD.', 'err');
+    return;
+  }
+  const dove = fxDove.replace(/\/$/, '') + '/' + f.name;
+  $('fx-su-esito').textContent = 'caricamento…';
+  try {
+    const r = await api('/api/carica?percorso=' + encodeURIComponent(dove),
+                        { method: 'POST', body: f });
+    const d = await r.json();
+    $('fx-su-esito').textContent = d.messaggio;
+    say('Caricato ' + f.name, 'ok');
+    $('fx-file').value = '';
+    fxVai(fxDove);
+  } catch (e) {
+    $('fx-su-esito').textContent = '';
+    say(e.message, 'err');
+  }
+}
+
+async function fxNvs() {
+  try {
+    const d = await (await api('/api/nvs')).json();
+    let html = '<table class="fxtab"><tr><th>spazio</th><th>chiave</th>' +
+               '<th>tipo</th><th>valore</th></tr>';
+    for (const v of d.voci) {
+      const val = v.segreto
+        ? '<span class="fxseg2">non mostrato' + (v.byte ? ' (' + v.byte + ' byte)' : '') + '</span>'
+        : '<span class="v">' + esc(v.valore) + '</span>';
+      html += '<tr><td>' + esc(v.spazio) + '</td><td>' + esc(v.chiave) +
+              '</td><td>' + esc(v.tipo) + '</td><td>' + val + '</td></tr>';
+    }
+    html += '</table>';
+    if (d.troncato) html += '<p class="hint">Elenco troncato.</p>';
+    $('fx-nvs').innerHTML = html;
+  } catch (e) { say(e.message, 'err'); }
 }
 
 // ------------------------------------------------------- slideshow (standby)
@@ -1000,6 +1307,10 @@ async function loadHA() {
     $('ha-dash').value = c.dashboard || '';
     $('ha-view').value = c.view || 0;
     $('ha-tts').value = c.tts || '';
+    $('ha-ca').value = '';
+    $('ha-ca-stato').textContent = c.ca_set
+      ? 'Un certificato e’ gia’ salvato. Il campo resta vuoto: il pannello non lo rimanda indietro.'
+      : 'Nessun certificato salvato: si usano le autorita’ pubbliche.';
     if (state.ha_paired) {
       $('ha-token-hint').textContent =
         'Il pannello e’ abbinato a Home Assistant: si rinnova da solo il permesso, ' +
@@ -1020,6 +1331,10 @@ async function saveHA() {
     view: parseInt($('ha-view').value || '0', 10),
     tts: $('ha-tts').value.trim()
   };
+  // Si manda solo se e' stato scritto qualcosa: cosi' un salvataggio normale
+  // non cancella il certificato gia' presente.
+  const ca = $('ha-ca').value.trim();
+  if (ca) body.ca = ca;
   const tok = $('ha-token').value;
   if (tok) body.token = tok;
   try {
@@ -1075,6 +1390,7 @@ if (authErr || authOk) history.replaceState(null, '', location.pathname);
 if (location.protocol === 'http:') {
   $('foot').textContent = 'Collegamento non cifrato: apri la pagina con https:// per proteggere la password.';
 }
+$('pane-file').addEventListener('click', fxClick);
 session();
 </script>
 </html>

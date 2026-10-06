@@ -13,9 +13,11 @@
   "options": {
     "step": {
       "init": {
-        "title": "Quale pannello",
-        "data": {
-          "pannello": "Pannello"
+        "title": "Pannelli CrowPanel",
+        "description": "Cosa vuoi fare?",
+        "menu_options": {
+          "slideshow": "Slideshow e valori in sovrimpressione",
+          "firmware": "Archivio dei firmware"
         }
       },
       "pannello": {
@@ -40,10 +42,60 @@
         "data_description": {
           "gestito_da_ha": "Togliendo la spunta il pannello torna a gestirsi lo slideshow da solo, dalla sua pagina web."
         }
+      },
+      "slideshow": {
+        "title": "Quale pannello",
+        "data": {
+          "pannello": "Pannello"
+        }
+      },
+      "firmware": {
+        "title": "Archivio dei firmware",
+        "description": "Le versioni restano qui dentro, cosi' tornare a quella di prima e' una scelta e non un recupero d'emergenza.",
+        "menu_options": {
+          "fw_carica": "Carica una versione nuova",
+          "fw_invia": "Manda una versione al pannello",
+          "fw_elimina": "Togli una versione dall'archivio"
+        }
+      },
+      "fw_carica": {
+        "title": "Carica un firmware",
+        "description": "Scegli il file .bin dell'applicazione (non il bootloader ne' la tabella delle partizioni). Nome, versione e data di compilazione li leggo dentro al file.",
+        "data": {
+          "file": "File del firmware",
+          "nome": "Come chiamarlo in archivio",
+          "note": "Note"
+        },
+        "data_description": {
+          "nome": "Lasciando vuoto si usa il nome del file.",
+          "note": "Per ricordarti cosa cambia in questa versione."
+        }
+      },
+      "fw_invia": {
+        "title": "Manda un firmware",
+        "description": "Il pannello lo scarica, ne ricalcola l'impronta e lo installa solo se corrisponde; poi riavvia. Se la versione nuova non regge due minuti collegata a Home Assistant, il pannello rimette da solo quella di prima.",
+        "data": {
+          "pannello": "Pannello",
+          "firmware": "Versione"
+        }
+      },
+      "fw_elimina": {
+        "title": "Togli dall'archivio",
+        "description": "Cancella il file da Home Assistant. Non tocca il pannello. Attenzione a non togliere la versione a cui vorresti tornare.",
+        "data": {
+          "firmware": "Versione",
+          "confermo": "Confermo"
+        }
       }
     },
     "abort": {
-      "nessun_pannello": "Nessun pannello si e' ancora presentato. Accendilo e aspetta un minuto."
+      "nessun_pannello": "Nessun pannello si e' ancora presentato. Accendilo e aspetta un minuto.",
+      "archivio_vuoto": "L'archivio e' vuoto: carica prima un firmware.",
+      "fw_caricato": "Caricato {nome}: versione {versione} del {data}, {kb} kB. Impronta {sha256}",
+      "fw_rifiutato": "Non e' andata: {errore}",
+      "fw_mandato": "Mandato {nome} (versione {versione}). Il pannello scarica, verifica e riavvia: ci vuole qualche decina di secondi.",
+      "fw_eliminato": "{nome} tolto dall'archivio.",
+      "fw_non_eliminato": "Non ho cancellato niente: mancava la conferma."
     }
   },
   "entity": {
@@ -82,8 +134,32 @@
       "alimentazione_pct": {
         "name": "Carica"
       },
+      "alimentazione": {
+        "name": "Alimentazione",
+        "state": {
+          "sconosciuto": "Sconosciuta",
+          "in carica": "In carica",
+          "carica": "Carica",
+          "a batteria": "A batteria",
+          "errore": "Errore"
+        }
+      },
+      "batteria_autonomia_min": {
+        "name": "Autonomia residua"
+      },
+      "batteria_mah": {
+        "name": "Capacita misurata"
+      },
+      "alimentazione_pct_stc8": {
+        "name": "Carica secondo il coprocessore"
+      },
       "alimentazione_stato": {
         "name": "Stato alimentazione (grezzo)"
+      }
+    },
+    "update": {
+      "firmware_update": {
+        "name": "Firmware"
       }
     }
   }

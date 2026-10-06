@@ -1,6 +1,31 @@
-# Name,   Type, SubType, Offset,  Size, Flags
-# Note: if you change the phy_init or app partition offset, make sure to change the offset in Kconfig.projbuild
-nvs,      data, nvs,     0x9000,  0x6000,
-phy_init, data, phy,     0xf000,  0x1000,
-factory,  app,  factory, ,        11M,
-storage,  data, spiffs,  ,        4M,
+# Name,   Type, SubType, Offset,   Size,     Flags
+#
+# Flash da 16 MB. Gli offset sono scritti tutti, non lasciati calcolare: una
+# tabella con gli offset impliciti si sposta da sola quando si cambia una
+# dimensione, e qui sotto c'e' una partizione che NON si deve mai spostare.
+#
+# nvs RESTA A 0x9000. Dentro ci sono l'indirizzo di Home Assistant, il permesso
+# per entrarci, le password della pagina web, il PIN dello schermo, le
+# impostazioni di rete, il certificato e la curva imparata della batteria.
+# Spostarla vuol dire perdere tutto questo e ricominciare dalla configurazione
+# guidata. Ogni modifica a questo file va fatta verificando che la riga nvs sia
+# ancora identica.
+#
+# otadata, ota_0 e ota_1 sono arrivate per l'aggiornamento via rete. Un ESP non
+# puo' riscrivere la partizione da cui sta eseguendo: ne servono due, si scrive
+# in quella ferma e si dice al bootloader di partire da li'. Con una sola
+# partizione "factory", com'era prima, esp_ota_begin non ha dove scrivere e
+# l'aggiornamento via rete e' semplicemente impossibile.
+#
+# Due slot da 7 MB invece di un factory da 11: il firmware oggi sta in 4,44 MB,
+# quindi restano 2,5 MB di margine per slot. Lo spazio e' venuto da storage,
+# che aveva 4 MB per tre file - standby.json, overrides.json e ramlog.csv, in
+# tutto poche decine di kilobyte. 1,875 MB sono ancora venti volte quello che
+# serve.
+#
+nvs,      data, nvs,     0x9000,   0x6000,
+phy_init, data, phy,     0xf000,   0x1000,
+otadata,  data, ota,     0x10000,  0x2000,
+ota_0,    app,  ota_0,   0x20000,  0x700000,
+ota_1,    app,  ota_1,   0x720000, 0x700000,
+storage,  data, spiffs,  0xe20000, 0x1e0000,

@@ -17,6 +17,8 @@
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "esp_http_client.h"
+#include "esp_crt_bundle.h"
+#include "ha_http.h"
 #include "driver/jpeg_decode.h"
 
 static const char *TAG = "web_img";
@@ -159,6 +161,12 @@ static bool scarica(const char *src, web_image_t *out)
     cfg.url = url;
     cfg.method = HTTP_METHOD_GET;
     cfg.timeout_ms = 10000;
+    /* Home Assistant dietro HTTPS: il certificato indicato dall'utente, o le
+       autorita' pubbliche. Stesso criterio del WebSocket. */
+    if (!strncmp(url, "https://", 8)) {
+        const char *ca = ha_tls_ca();
+        if (ca) cfg.cert_pem = ca; else cfg.crt_bundle_attach = esp_crt_bundle_attach;
+    }
     esp_http_client_handle_t c = esp_http_client_init(&cfg);
     if (!c) return false;
 
@@ -250,6 +258,10 @@ bool web_image_scarica_file(const char *src, const char *destinazione)
     cfg.url = url;
     cfg.method = HTTP_METHOD_GET;
     cfg.timeout_ms = 15000;
+    if (!strncmp(url, "https://", 8)) {
+        const char *ca = ha_tls_ca();
+        if (ca) cfg.cert_pem = ca; else cfg.crt_bundle_attach = esp_crt_bundle_attach;
+    }
     esp_http_client_handle_t cl = esp_http_client_init(&cfg);
     if (!cl) return false;
 
@@ -329,7 +341,10 @@ static void accoda(const char *src, bool subito)
     for (const Attesa &a : s_coda) if (a.src == src) { gia = true; break; }
     if (!gia) s_coda.push_back({src, subito});
     xSemaphoreGive(s_mtx);
-    if (!s_task) xTaskCreate(img_task, "web_img", 8192, NULL, 3, &s_task);
+    /* Stack largo: da quando il pannello sa parlare in HTTPS, ogni chiamata
+       a Home Assistant puo' portarsi dietro una stretta di mano TLS, che
+       di stack ne vuole alcuni kilobyte in piu' di una in chiaro. */
+    if (!s_task) xTaskCreate(img_task, "web_img", 12288, NULL, 3, &s_task);
     else         xTaskNotifyGive(s_task);
 }
 

@@ -39,6 +39,9 @@
 #include "setting/pin_lock.h"
 #include "idle_manager.h"
 #include "standby_show.h"
+#include "batteria.h"
+#include "ota_update.h"
+#include "esplora.h"
 #include "ram_monitor.h"
 #include "debug_config.h"
 #include "setting/settings_extra.h"
@@ -365,6 +368,182 @@ static void cmd_backup(void)
     if (backup_chiave_testo(k, sizeof(k)))
         printf("BACKUP chiave presente (comincia per %.4s), gia' scaricata: %s\n",
                k, backup_chiave_gia_presa() ? "si" : "no");
+}
+
+/* "mostra <percorso>": stampa un file sulla seriale.
+
+   Serve a portarsi via dal pannello un file senza passare dalla pagina web,
+   che vuole la password, e senza estrarre la scheda SD, che a pannello acceso
+   non si fa. Tipicamente: il registro della batteria da analizzare sul
+   computer, o la configurazione dello slideshow prima di un intervento che
+   rifa' lo SPIFFS.
+
+   I percorsi ammessi sono gli stessi dell'esploratore - niente ".." e solo
+   /sdcard e /spiffs - perche' il controllo deve stare in un posto solo.
+
+   A fette e con un tetto: un file enorme riempirebbe il terminale per minuti
+   senza che nessuno possa fermarlo. */
+static void cmd_mostra(const char *percorso)
+{
+    while (*percorso == ' ') percorso++;
+    if (!esplora_permesso(percorso)) {
+        printf("MOSTRA_ERR percorso non ammesso: '%s'\n", percorso);
+        return;
+    }
+    FILE *f = fopen(percorso, "rb");
+    if (!f) {
+        printf("MOSTRA_ERR %s non si apre (%s)\n", percorso, strerror(errno));
+        return;
+    }
+    fseek(f, 0, SEEK_END);
+    long dim = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    /* Le marche di inizio e fine servono a chi cattura dal PC per ritagliare
+       il file dal resto del log, che nel frattempo continua a uscire. */
+    printf("MOSTRA_INIZIO %s %ld\n", percorso, dim);
+    char *buf = (char *)heap_caps_malloc(1024, MALLOC_CAP_SPIRAM);
+    if (buf) {
+        size_t n;
+        while ((n = fread(buf, 1, 1024, f)) > 0) {
+            fwrite(buf, 1, n, stdout);
+            /* Una pausa ogni fetta: la seriale ha il suo buffer e il log degli
+               altri task continua a scriverci dentro. Senza, un file grosso
+               perde pezzi proprio mentre lo si sta salvando. */
+            vTaskDelay(pdMS_TO_TICKS(20));
+        }
+        heap_caps_free(buf);
+    }
+    fclose(f);
+    printf("\nMOSTRA_FINE %s\n", percorso);
+}
+
+/* "scrivi <percorso> <base64>"    crea o sovrascrive
+   "aggiungi <percorso> <base64>"  accoda
+
+   Il gemello di "mostra": rimettere nel pannello un file che si ha sul
+   computer, senza passare dalla pagina web - che vuole la password - e senza
+   estrarre la scheda SD. Serve soprattutto dopo un intervento che rifa' lo
+   SPIFFS, per riportare la configurazione dov'era.
+
+   In base64 perche' la riga della console e' testo: un JSON pieno di virgolette
+   passerebbe male e un file binario non passerebbe affatto. E il base64 si
+   spezza dove si vuole, quindi un file piu' lungo di una riga si manda in piu'
+   pezzi con "aggiungi" - purche' ogni pezzo sia multiplo di quattro
+   caratteri, altrimenti non si decodifica da solo. */
+static void cmd_scrivi(const char *arg, bool accoda)
+{
+    while (*arg == ' ') arg++;
+    const char *sp = strchr(arg, ' ');
+    char percorso[200];
+    if (!sp || (size_t)(sp - arg) >= sizeof(percorso)) {
+        printf("SCRIVI_ERR serve: %s <percorso> <base64>\n", accoda ? "aggiungi" : "scrivi");
+        return;
+    }
+    size_t lp = sp - arg;
+    memcpy(percorso, arg, lp);
+    percorso[lp] = 0;
+    const char *testo = sp + 1;
+    while (*testo == ' ') testo++;
+
+    if (!esplora_permesso(percorso)) {
+        printf("SCRIVI_ERR percorso non ammesso: '%s'\n", percorso);
+        return;
+    }
+
+    size_t serve = 0, fatti = 0, n = strlen(testo);
+    mbedtls_base64_decode(NULL, 0, &serve, (const unsigned char *)testo, n);
+    if (!serve) { printf("SCRIVI_ERR base64 non valido\n"); return; }
+    unsigned char *dati = (unsigned char *)heap_caps_malloc(serve, MALLOC_CAP_SPIRAM);
+    if (!dati) { printf("SCRIVI_ERR niente memoria\n"); return; }
+    if (mbedtls_base64_decode(dati, serve, &fatti, (const unsigned char *)testo, n) != 0) {
+        heap_caps_free(dati);
+        printf("SCRIVI_ERR base64 non valido\n");
+        return;
+    }
+
+    FILE *f = fopen(percorso, accoda ? "ab" : "wb");
+    if (!f) {
+        heap_caps_free(dati);
+        printf("SCRIVI_ERR %s non si apre (%s)\n", percorso, strerror(errno));
+        return;
+    }
+    size_t scritti = fwrite(dati, 1, fatti, f);
+    long dim = ftell(f);
+    fclose(f);
+    heap_caps_free(dati);
+    if (scritti != fatti)
+        printf("SCRIVI_ERR scritti %u byte su %u\n", (unsigned)scritti, (unsigned)fatti);
+    else
+        printf("SCRIVI_OK %s: %u byte %s, il file ora e' %ld\n", percorso,
+               (unsigned)fatti, accoda ? "accodati" : "scritti", dim);
+}
+
+/* "ota"                        a che punto e' l'aggiornamento
+   "ota <url> <sha256> [byte]"  comincia un aggiornamento
+
+   Esiste per provare l'OTA senza passare da Home Assistant: si serve il .bin
+   dal computer e si guarda tutta la catena - scaricamento, impronta, scrittura,
+   riavvio, conferma - prima di metterci in mezzo anche il plugin. La stessa
+   strada che abbiamo seguito per l'OTA del C6. */
+static void cmd_ota(const char *arg)
+{
+    if (!arg[0]) {
+        ota_info_t i;
+        ota_update_stato(&i);
+        char v[96];
+        ota_update_versione(v, sizeof(v));
+        printf("OTA in esecuzione: %s%s\n", v, i.in_prova ? "  [IN PROVA]" : "");
+        printf("OTA stato=%s %d%% (%lu/%lu byte) %s\n", ota_parole(i.stato), i.pct,
+               (unsigned long)i.byte_fatti, (unsigned long)i.byte_attesi, i.messaggio);
+        return;
+    }
+    char url[400] = "", sha[80] = "";
+    unsigned byte = 0;
+    int n = sscanf(arg, "%399s %79s %u", url, sha, &byte);
+    if (n < 2) {
+        printf("OTA_ERR serve: ota <url> <sha256 di 64 caratteri> [byte]\n");
+        return;
+    }
+    if (ota_update_avvia(url, sha, byte)) printf("OTA_OK avviato\n");
+    else                                  printf("OTA_ERR non parte (vedi il log)\n");
+}
+
+/* "batteria"                      stato, curva, taratura, registro
+   "batteria azzera"               dimentica la curva imparata
+   "batteria ma <spento> <acceso>" i consumi misurati a pinza, in mA */
+static void cmd_batteria(const char *arg)
+{
+    if (!strcmp(arg, "azzera")) {
+        batteria_azzera_curva();
+        printf("BATTERIA_OK curva dimenticata\n");
+        return;
+    }
+    if (!strncmp(arg, "ma", 2)) {
+        unsigned spento = 0, acceso = 0;
+        if (sscanf(arg + 2, "%u %u", &spento, &acceso) != 2) {
+            printf("BATTERIA_ERR serve: batteria ma <mA schermo spento> <mA schermo acceso>\n");
+            return;
+        }
+        if (spento > 5000 || acceso > 5000) {
+            printf("BATTERIA_ERR valori fuori scala (massimo 5000 mA)\n");
+            return;
+        }
+        batteria_imposta_correnti((uint16_t)spento, (uint16_t)acceso);
+        printf("BATTERIA_OK consumi: %u mA spento, %u mA acceso\n", spento, acceso);
+        return;
+    }
+    if (arg[0]) {
+        printf("BATTERIA_ERR non capisco '%s' (batteria | batteria azzera | batteria ma A B)\n", arg);
+        return;
+    }
+    /* In PSRAM: la curva a 21 punti piu' il resto non sta comoda in 512 byte
+       di stack, e questa console gira su un task piccolo. */
+    char *buf = (char *)heap_caps_malloc(1536, MALLOC_CAP_SPIRAM);
+    if (!buf) { printf("BATTERIA_ERR niente memoria\n"); return; }
+    batteria_diagnostica(buf, 1536);
+    fputs(buf, stdout);
+    heap_caps_free(buf);
 }
 
 static void cmd_enprefs(void)
@@ -767,7 +946,7 @@ static void handle(char *line)
     bsp_display_unlock();
 
     if (!strcmp(line, "help")) {
-        printf("COMANDI: open | openapp <id> | shot [1-8] | info | fw | cpmem | url <ws://..> | dash <path> [vista] | refresh | ramlog [ora] | ls <path> | tasks | lvgl ram/psram | console on/off | standby | wizard [step N|done|reset] | llcfg | enprefs | energia [oggi|settimana|mese|anno] | backup | sdiooff | entities | scroll [px] | tap x y | drag x1 y1 x2 y2 | mic | factory | reboot | slaveota <http://..> [prova] | help\n");
+        printf("COMANDI: open | openapp <id> | shot [1-8] | info | fw | cpmem | url <ws://..> | dash <path> [vista] | refresh | ramlog [ora] | ls <path> | tasks | lvgl ram/psram | console on/off | standby | wizard [step N|done|reset] | llcfg | enprefs | energia [oggi|settimana|mese|anno] | batteria [azzera|ma A B] | ota [url sha256] | mostra <file> | scrivi/aggiungi <file> <b64> | backup | sdiooff | entities | scroll [px] | tap x y | drag x1 y1 x2 y2 | mic | factory | reboot | slaveota <http://..> [prova] | help\n");
     } else if (!strcmp(line, "mic")) {
         cmd_mic();
     } else if (!strncmp(line, "setscr ", 7)) {
@@ -823,6 +1002,16 @@ static void handle(char *line)
         cmd_energia(line[7] == ' ' ? line + 8 : "");
     } else if (!strcmp(line, "backup")) {
         cmd_backup();
+    } else if (!strncmp(line, "batteria", 8)) {
+        cmd_batteria(line[8] == ' ' ? line + 9 : "");
+    } else if (!strncmp(line, "scrivi ", 7)) {
+        cmd_scrivi(line + 7, false);
+    } else if (!strncmp(line, "aggiungi ", 9)) {
+        cmd_scrivi(line + 9, true);
+    } else if (!strncmp(line, "mostra ", 7)) {
+        cmd_mostra(line + 7);
+    } else if (!strncmp(line, "ota", 3)) {
+        cmd_ota(line[3] == ' ' ? line + 4 : "");
     } else if (!strcmp(line, "enprefs")) {
         cmd_enprefs();
     } else if (!strncmp(line, "dltest ", 7)) {
@@ -928,14 +1117,26 @@ static void console_task(void *arg)
     uart_flush_input(UART_NUM_0);
     ESP_LOGI(TAG, "console UART pronta - scrivi 'help'");
 
-    char line[80];
+    /* Larga: ottanta byte bastavano finche' i comandi erano "info" e "reboot",
+       ma "ota <url> <impronta> <byte>" ne vuole da solo centodieci - solo
+       l'impronta SHA-256 sono 64 caratteri. */
+    char line[320];
     int n = 0;
+    bool troppo_lunga = false;
     while (true) {
         uint8_t c;
         if (uart_read_bytes(UART_NUM_0, &c, 1, pdMS_TO_TICKS(250)) != 1) continue;
         if (c == '\r' || c == '\n') {
             line[n] = '\0';
-            if (n > 0) {
+            if (troppo_lunga) {
+                /* Una riga troppo lunga NON si esegue tagliata. Prima i
+                   caratteri in piu' venivano buttati in silenzio e il comando
+                   partiva mutilato: un "ota" con mezza impronta veniva
+                   rifiutato lamentandosi dell'impronta, e il vero motivo - la
+                   riga tagliata - non compariva da nessuna parte. */
+                printf("CMD_ERR riga troppo lunga (massimo %d caratteri): non eseguita\n",
+                       (int)sizeof(line) - 1);
+            } else if (n > 0) {
                 if (!debug_config_get()->uart_console && strcmp(line, "console on") != 0) {
                     printf("CONSOLE disabilitata dalle Impostazioni (per riattivarla: console on)\n");
                 } else {
@@ -945,15 +1146,21 @@ static void console_task(void *arg)
                 }
             }
             n = 0;
+            troppo_lunga = false;
         } else if (n < (int)sizeof(line) - 1) {
             line[n++] = (char)c;
+        } else {
+            troppo_lunga = true;
         }
     }
 }
 
 void uart_console_exec(const char *cmd, char *out, size_t out_sz)
 {
-    char line[160];
+    /* Stessa misura della console seriale: questa strada la usano la pagina
+       web e Home Assistant, e un comando che li' funziona non deve arrivare
+       tagliato solo perche' e' passato da un'altra porta. */
+    char line[320];
     strlcpy(line, cmd, sizeof(line));
     if (!strncmp(line, "shot", 4)) {        // l'immagine in base64 non ha senso a schermo
         strlcpy(out, "shot: disponibile solo dalla seriale\n", out_sz);
