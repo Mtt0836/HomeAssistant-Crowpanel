@@ -3396,7 +3396,7 @@ static void umid_refresh(Umid *u, const std::string &eid)
     else                         snprintf(b, sizeof(b), "--");
     lv_label_set_text(u->ora, b);
     if (std::isfinite(e.umidita_set)) snprintf(b, sizeof(b), "obiettivo %.0f%%", e.umidita_set);
-    else                         snprintf(b, sizeof(b), "");
+    else                         b[0] = '\0';
     lv_label_set_text(u->set, b);
     lv_label_set_text(u->modo, sanitize(e.modo.c_str()).c_str());
     if (is_on(eid)) lv_obj_add_state(u->sw, LV_STATE_CHECKED);

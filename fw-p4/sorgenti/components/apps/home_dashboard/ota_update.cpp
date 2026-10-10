@@ -117,7 +117,11 @@ static void ota_task(void *arg)
            Senza risolverlo, esp_http_client_init non riesce nemmeno a
            interpretarlo e torna NULL: il sintomo era "non riesco a chiedere il
            file", che accusava la rete per un indirizzo mai costruito. */
-        char url[HA_URL_MAX * 2];
+        /* Tanto quanto i due pezzi che ci finiscono dentro, non il doppio
+           di uno dei due: base piu' percorso possono arrivare a 527 byte e
+           in 256 non ci stavano. Un indirizzo tagliato a meta' falliva
+           lamentando la rete. */
+        char url[HA_URL_MAX + sizeof(l->url)];
         char base[HA_URL_MAX];
         bool nostro = false;
         bool so_base = ha_http_base(base, sizeof(base));

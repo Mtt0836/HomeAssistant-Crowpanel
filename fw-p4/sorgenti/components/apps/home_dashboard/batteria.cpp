@@ -23,7 +23,7 @@ static const char *TAG = "batt";
 #define LOG_VECCHIO     "/sdcard/batteria.1.csv"
 #define LOG_MAX         (4 * 1024 * 1024)
 #define HEADER  "data_ora,uptime_s,mv,mv_filtrato,pct,pct_stc8,stato,stato_grezzo," \
-                "led,schermo,corsa_s,corsa_carica\n"
+                "led,schermo,mv_riposo,caduta_schermo,corsa_s,corsa_carica\n"
 
 /* Ogni quanto si interroga il coprocessore. Il factory lo faceva ogni secondo,
    e ogni giro sono dodici transazioni I2C separate (il driver legge un
@@ -295,6 +295,15 @@ void batteria_azzera_curva(void)
 
 // ------------------------------------------------------------------ registro
 
+/* Il file corrente diventa la generazione di riserva. Una sola: la
+   precedente si butta, perche' la storia di mesi fa non vale una scheda
+   piena. */
+static void metti_da_parte(void)
+{
+    remove(LOG_VECCHIO);
+    rename(LOG_PATH, LOG_VECCHIO);
+}
+
 static void log_ruota(void)
 {
     FILE *f = fopen(LOG_PATH, "r");
@@ -306,13 +315,47 @@ static void log_ruota(void)
     /* Una generazione di riserva e poi si ricomincia: il file lo si va a
        leggere sul computer, e perdere la storia di mesi fa non costa niente.
        Riempire la scheda invece fermerebbe lo slideshow. */
-    remove(LOG_VECCHIO);
-    rename(LOG_PATH, LOG_VECCHIO);
+    metti_da_parte();
     ESP_LOGI(TAG, "registro ruotato (%ld byte)", n);
+}
+
+/* L'intestazione descrive le colonne delle righe che seguono, e dopo un
+   aggiornamento del firmware puo' non descriverle piu'. Succede davvero: la
+   riga e' passata da dodici a quattordici colonne, e il file sulla scheda
+   cominciava ancora con l'intestazione a dodici - appesa una volta sola, a
+   file vuoto, mesi prima.
+
+   Appendere righe nuove sotto un'intestazione vecchia sarebbe lo stesso
+   difetto di prima, spostato dal codice al file: un registro che si rilegge
+   male senza dirlo. Quindi al primo uso dopo l'accensione si controlla, e se
+   non combacia il file si mette da parte come nella rotazione. Non si perde
+   niente - resta sotto LOG_VECCHIO - e il file nuovo nasce con la sua
+   intestazione giusta.
+
+   Una volta per accensione: leggere la prima riga a ogni append costerebbe
+   un'apertura in piu' al minuto per nulla. */
+static void intestazione_controlla(void)
+{
+    static bool fatto = false;
+    if (fatto) return;
+    fatto = true;
+
+    FILE *f = fopen(LOG_PATH, "r");
+    if (!f) return;                       // non c'e': nascera' giusto
+    char prima[sizeof(HEADER) + 8];
+    char *letto = fgets(prima, sizeof(prima), f);
+    fclose(f);
+    if (!letto) return;                   // vuoto: nascera' giusto
+    if (strcmp(prima, HEADER) == 0) return;
+
+    ESP_LOGW(TAG, "il registro ha un'intestazione di un firmware precedente: "
+                  "lo metto da parte in %s e ricomincio", LOG_VECCHIO);
+    metti_da_parte();
 }
 
 static void log_riga(const char *riga)
 {
+    intestazione_controlla();
     FILE *f = fopen(LOG_PATH, "a");
     if (!f) {
         /* Senza SD si perde il registro, non la stima: non e' un guasto da
@@ -342,15 +385,27 @@ static void log_campione(const batt_info_t *i, bool schermo)
     localtime_r(&now, &tm);
     if (tm.tm_year + 1900 >= 2024) strftime(quando, sizeof(quando), "%Y-%m-%d %H:%M:%S", &tm);
 
-    char riga[200];
-    snprintf(riga, sizeof(riga), "%s,%u,%u,%u,%u,%u,%s,%u,%u,%s,%u,%.0f\n",
+    /* Quattordici colonne, quante ne dichiara HEADER. Le ultime due sono
+       quelle che rendono il registro verificabile: senza i secondi della
+       corsa e la carica consumata il file racconta la scarica ma non la
+       taratura, e la curva non si puo' ricalcolare sul computer.
+
+       Qui si contano i segnaposti a mano una volta sola, perche' fin qui
+       nessuno li contava: erano dodici per quattordici argomenti, i due
+       della corsa cadevano nel vuoto e la caduta dello schermo - un
+       uint32_t - finiva in un %.0f, che e' comportamento indefinito. Il
+       compilatore lo avrebbe detto subito, ma -Wno-format lo zittiva. */
+    char riga[220];
+    snprintf(riga, sizeof(riga), "%s,%u,%u,%u,%u,%u,%s,%u,%u,%s,%u,%u,%u,%.0f\n",
              quando, (unsigned)(esp_timer_get_time() / 1000000),
-             (unsigned)i->mv, (unsigned)i->mv_filtrato, i->pct, i->pct_stc8,
-             batteria_stato_parole(i->stato), i->stato_grezzo, i->led_grezzo,
+             (unsigned)i->mv, (unsigned)i->mv_filtrato,
+             (unsigned)i->pct, (unsigned)i->pct_stc8,
+             batteria_stato_parole(i->stato),
+             (unsigned)i->stato_grezzo, (unsigned)i->led_grezzo,
              schermo ? "acceso" : "spento",
-             (unsigned)i->mv_riposo, (unsigned)s_caduta_schermo_mv,
+             (unsigned)i->mv_riposo, (unsigned)i->caduta_schermo_mv,
              s_corsa ? (unsigned)((esp_timer_get_time() - s_corsa_inizio_us) / 1000000) : 0u,
-             s_corsa ? s_carica : 0.0);
+             (double)(s_corsa ? s_carica : 0.0f));
     log_riga(riga);
 }
 
@@ -611,18 +666,47 @@ static void campiona(void)
     }
     if (st == BATT_IN_CARICA || st == BATT_CARICA) s_distacco_us = 0;
 
-    // ---- quanto pesa lo schermo acceso, misurato quando si spegne
+    /* ---- quanto pesa lo schermo acceso, misurato quando si spegne
+
+       Si misura la RIPRESA della tensione dopo lo spegnimento, e si aspetta
+       perche' la cella non si riprende all'istante. Due minuti, gli stessi
+       dell'offset di carica qui sopra e per lo stesso motivo: il rilassamento
+       sta quasi tutto dentro quella finestra, e in due minuti una cella da
+       qualche migliaio di mAh perde cosi' poca carica che non sporca la
+       misura (a 250 mA sono 8 mAh su 4500, lo 0,2%).
+
+       Prima si aspettavano trenta secondi, e sottostimava per due motivi che
+       si sommavano: la cella non aveva finito di riprendersi, e il filtro -
+       un passa-basso a un ottavo su periodo di due secondi, costante di tempo
+       sui sedici secondi - a trenta secondi era arrivato all'85% del gradino.
+       Risultato misurato sul ciclo del 6-7 ottobre 2026: 22 mV salvati contro
+       i ~40 che le transizioni nello stesso registro mostrano.
+
+       Serve anche che lo schermo sia stato acceso per un minuto almeno: su
+       un'accensione breve il filtro non ha avuto il tempo di scendere alla
+       tensione sotto carico, quindi il punto di partenza sarebbe troppo alto
+       e la ripresa misurata troppo piccola - lo stesso errore dall'altro
+       capo.
+
+       Con una finestra piu' larga le misure sono piu' rare, perche' basta che
+       lo schermo si riaccenda entro due minuti per annullarla. E' il verso
+       giusto in cui sbagliare: meglio poche misure buone che molte storte,
+       tanto il valore si media con quelle di prima e non serve in fretta. */
     {
         static bool schermo_prec = true;
+        static int64_t s_acceso_us = 0;
+        if (!schermo_prec && schermo) s_acceso_us = esp_timer_get_time();
         if (schermo_prec && !schermo) {        // appena spento
+            bool abbastanza = s_acceso_us &&
+                (esp_timer_get_time() - s_acceso_us) > 60ll * 1000000;
             s_mv_prima_spento = filtro;
-            s_spento_us = esp_timer_get_time();
+            s_spento_us = abbastanza ? esp_timer_get_time() : 0;
         }
         /* Si misura solo a batteria: sotto carica la tensione la tiene il
            caricatore e la caduta non si vede. E si annulla se lo schermo
            torna acceso prima della misura. */
         if (schermo || st != BATT_A_BATTERIA) s_spento_us = 0;
-        if (s_spento_us && esp_timer_get_time() - s_spento_us > 30ll * 1000000) {
+        if (s_spento_us && esp_timer_get_time() - s_spento_us > 120ll * 1000000) {
             uint32_t c = filtro > s_mv_prima_spento ? filtro - s_mv_prima_spento : 0;
             if (c <= 400) {
                 uint32_t nuovo = s_caduta_schermo_mv ? (s_caduta_schermo_mv + c) / 2 : c;

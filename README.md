@@ -19,19 +19,24 @@ anche da fuori casa.
 
 ---
 
-**Versione 0.2.0 — 1 ottobre 2026.**
+**Versione 0.3.5 — 10 ottobre 2026.** Cosa e' cambiato da una versione
+all'altra sta in [CHANGELOG.md](CHANGELOG.md).
 
 Provata su hardware vero: un CrowPanel Advance 10.1" V1.2 con ESP-IDF 6.1,
-collegato a un Home Assistant di casa. Prima di pubblicarla il pannello ha
-retto una veglia continua con il registro della seriale sotto osservazione,
-attraversando piu' volte il ciclo completo dello standby — slideshow, schermo
-spento, risveglio — senza un riavvio.
+collegato a un Home Assistant di casa. Il pannello ha retto una veglia
+continua con il registro della seriale sotto osservazione, attraversando piu'
+volte il ciclo completo dello standby — slideshow, schermo spento, risveglio
+— senza un riavvio; l'aggiornamento via rete e' stato provato da capo a
+fondo, compresa un'immagine con l'impronta sbagliata di proposito, che il
+pannello ha rifiutato; e un ciclo completo di batteria, 17 ore di scarica e
+13 di ricarica, ha prodotto la prima curva misurata sulla cella vera.
 
 Quello che non e' ancora stato provato e' scritto dove serve, senza
-nasconderlo: il collegamento a un Home Assistant in **HTTPS** (`wss://`) non
-funziona ancora, perche' al WebSocket manca l'elenco dei certificati; la voce
-degli avvisi richiede un altoparlante collegato al connettore della scheda,
-che non e' montato di serie.
+nasconderlo. La voce degli avvisi richiede un altoparlante collegato al
+connettore della scheda, che non e' montato di serie, e non ha ancora prodotto
+suono. L'autotaratura della batteria e' stata misurata su una cella e una
+scheda: la curva che impara vale per la tua, non per quella di qualcun altro,
+ed e' il motivo per cui la impara invece di averla scritta dentro.
 
 ---
 
